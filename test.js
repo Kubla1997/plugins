@@ -1,1726 +1,517 @@
 (function() {
-  'use strict';
-
-  var Defined = {
-    api: 'lampac',
-    localhost: '{localhost}/',
-    apn: ''
-  };
-
-  var balansers_with_search;
-  
-  var unic_id = Lampa.Storage.get('lampac_unic_id', '');
-  if (!unic_id) {
-    unic_id = Lampa.Utils.uid(8).toLowerCase();
-    Lampa.Storage.set('lampac_unic_id', unic_id);
-  }
-  
-  {rch_websoket}
-
-  function account(url) {
-    url = url + '';
-    if (url.indexOf('account_email=') == -1) {
-      var email = Lampa.Storage.get('account_email');
-      if (email) url = Lampa.Utils.addUrlComponent(url, 'account_email=' + encodeURIComponent(email));
-    }
-    if (url.indexOf('uid=') == -1) {
-      var uid = Lampa.Storage.get('lampac_unic_id', '');
-      if (uid) url = Lampa.Utils.addUrlComponent(url, 'uid=' + encodeURIComponent(uid));
-    }
-    if (url.indexOf('token=') == -1) {
-      var token = '{token}';
-      if (token != '') url = Lampa.Utils.addUrlComponent(url, 'token={token}');
-    }
-    if (url.indexOf('nws_id=') == -1 && window.rch_nws && window.rch_nws[hostkey]) {
-      var nws_id = window.rch_nws[hostkey].connectionId || '';
-      if (nws_id) url = Lampa.Utils.addUrlComponent(url, 'nws_id=' + encodeURIComponent(nws_id));
-    }
-    return url;
-  }
-  
-  var Network = Lampa.Reguest;
-
-  function component(object) {
-    var network = new Network();
-    var scroll = new Lampa.Scroll({
-      mask: true,
-      over: true
-    });
-    var files = new Lampa.Explorer(object);
-    var filter = new Lampa.Filter(object);
-    var sources = {};
-    var last;
-    var source;
-    var balanser;
-    var initialized;
-    var balanser_timer;
-    var images = [];
-    var number_of_requests = 0;
-    var number_of_requests_timer;
-    var life_wait_times = 0;
-    var life_wait_timer;
-    var filter_sources = {};
-    var filter_translate = {
-      season: Lampa.Lang.translate('torrent_serial_season'),
-      voice: Lampa.Lang.translate('torrent_parser_voice'),
-      source: Lampa.Lang.translate('settings_rest_source')
-    };
-    var filter_find = {
-      season: [],
-      voice: []
-    };
-	
-    if (balansers_with_search == undefined) {
-      network.timeout(10000);
-      network.silent(account('{localhost}/lite/withsearch'), function(json) {
-        balansers_with_search = json;
-      }, function() {
-		  balansers_with_search = [];
-	  });
-    }
-	
-    function balanserName(j) {
-      var bals = j.balanser;
-      var name = j.name.split(' ')[0];
-      return (bals || name).toLowerCase();
-    }
-	
-	function clarificationSearchAdd(value){
-		var id = Lampa.Utils.hash(object.movie.number_of_seasons ? object.movie.original_name : object.movie.original_title);
-		var all = Lampa.Storage.get('clarification_search','{}');
-		
-		all[id] = value;
-		
-		Lampa.Storage.set('clarification_search',all);
-	}
-	
-	function clarificationSearchDelete(){
-		var id = Lampa.Utils.hash(object.movie.number_of_seasons ? object.movie.original_name : object.movie.original_title);
-		var all = Lampa.Storage.get('clarification_search','{}');
-		
-		delete all[id];
-		
-		Lampa.Storage.set('clarification_search',all);
-	}
-	
-	function clarificationSearchGet(){
-		var id = Lampa.Utils.hash(object.movie.number_of_seasons ? object.movie.original_name : object.movie.original_title);
-		var all = Lampa.Storage.get('clarification_search','{}');
-		
-		return all[id];
-	}
-	
-    this.initialize = function() {
-      var _this = this;
-      this.loading(true);
-      filter.onSearch = function(value) {
-		  
-		clarificationSearchAdd(value);
-		
-        Lampa.Activity.replace({
-          search: value,
-          clarification: true,
-          similar: true
-        });
-      };
-      filter.onBack = function() {
-        _this.start();
-      };
-      filter.render().find('.selector').on('hover:enter', function() {
-        clearInterval(balanser_timer);
-      });
-      filter.render().find('.filter--search').appendTo(filter.render().find('.torrent-filter'));
-      filter.onSelect = function(type, a, b) {
-        if (type == 'filter') {
-          if (a.reset) {
-			  clarificationSearchDelete();
-			  
-            _this.replaceChoice({
-              season: 0,
-              voice: 0,
-              voice_url: '',
-              voice_name: ''
-            });
-            setTimeout(function() {
-              Lampa.Select.close();
-              Lampa.Activity.replace({
-				  clarification: 0,
-				  similar: 0
-			  });
-            }, 10);
-          } else {
-            var url = filter_find[a.stype][b.index].url;
-            var choice = _this.getChoice();
-            if (a.stype == 'voice') {
-              choice.voice_name = filter_find.voice[b.index].title;
-              choice.voice_url = url;
-            }
-            choice[a.stype] = b.index;
-            _this.saveChoice(choice);
-            _this.reset();
-            _this.request(url);
-            setTimeout(Lampa.Select.close, 10);
-          }
-        } else if (type == 'sort') {
-          Lampa.Select.close();
-          object.lampac_custom_select = a.source;
-          _this.changeBalanser(a.source);
-        }
-      };
-      if (filter.addButtonBack) filter.addButtonBack();
-      filter.render().find('.filter--sort span').text(Lampa.Lang.translate('lampac_balanser'));
-      scroll.body().addClass('torrent-list');
-      files.appendFiles(scroll.render());
-      files.appendHead(filter.render());
-      scroll.minus(files.render().find('.explorer__files-head'));
-      scroll.body().append(Lampa.Template.get('lampac_content_loading'));
-      Lampa.Controller.enable('content');
-      this.loading(false);
-	  if(object.balanser){
-		  files.render().find('.filter--search').remove();
-		  sources = {};
-		  sources[object.balanser] = {name: object.balanser};
-		  balanser = object.balanser;
-		  filter_sources = [];
-		  
-		  return network["native"](account(object.url.replace('rjson=','nojson=')), this.parse.bind(this), function(){
-			  files.render().find('.torrent-filter').remove();
-			  _this.empty();
-		  }, false, {
-            dataType: 'text'
-		  });
-	  } 
-      this.externalids().then(function() {
-        return _this.createSource();
-      }).then(function(json) {
-        if (!balansers_with_search.find(function(b) {
-            return balanser.slice(0, b.length) == b;
-          })) {
-          filter.render().find('.filter--search').addClass('hide');
-        }
-        _this.search();
-      })["catch"](function(e) {
-        _this.noConnectToServer(e);
-      });
-    };
-    this.rch = function(json, noreset) {
-      var _this2 = this;
-	  rchRun(json, function() {
-        if (!noreset) _this2.find();
-        else noreset();
-	  });
-    };
-    this.externalids = function() {
-      return new Promise(function(resolve, reject) {
-        if (!object.movie.imdb_id || !object.movie.kinopoisk_id) {
-          var query = [];
-          query.push('id=' + encodeURIComponent(object.movie.id));
-          query.push('serial=' + (object.movie.name ? 1 : 0));
-          if (object.movie.imdb_id) query.push('imdb_id=' + (object.movie.imdb_id || ''));
-          if (object.movie.kinopoisk_id) query.push('kinopoisk_id=' + (object.movie.kinopoisk_id || ''));
-          var url = Defined.localhost + 'externalids?' + query.join('&');
-          network.timeout(10000);
-          network.silent(account(url), function(json) {
-            for (var name in json) {
-              object.movie[name] = json[name];
-            }
-            resolve();
-          }, function() {
-            resolve();
-          });
-        } else resolve();
-      });
-    };
-    this.updateBalanser = function(balanser_name) {
-      var last_select_balanser = Lampa.Storage.cache('online_last_balanser', 3000, {});
-      last_select_balanser[object.movie.id] = balanser_name;
-      Lampa.Storage.set('online_last_balanser', last_select_balanser);
-    };
-    this.changeBalanser = function(balanser_name) {
-      this.updateBalanser(balanser_name);
-      Lampa.Storage.set('online_balanser', balanser_name);
-      var to = this.getChoice(balanser_name);
-      var from = this.getChoice();
-      if (from.voice_name) to.voice_name = from.voice_name;
-      this.saveChoice(to, balanser_name);
-      Lampa.Activity.replace();
-    };
-    this.requestParams = function(url) {
-      var query = [];
-      var card_source = object.movie.source || 'tmdb'; //Lampa.Storage.field('source')
-      query.push('id=' + encodeURIComponent(object.movie.id));
-      if (object.movie.imdb_id) query.push('imdb_id=' + (object.movie.imdb_id || ''));
-      if (object.movie.kinopoisk_id) query.push('kinopoisk_id=' + (object.movie.kinopoisk_id || ''));
-	  if (object.movie.tmdb_id) query.push('tmdb_id=' + (object.movie.tmdb_id || ''));
-      query.push('title=' + encodeURIComponent(object.clarification ? object.search : object.movie.title || object.movie.name));
-      query.push('original_title=' + encodeURIComponent(object.movie.original_title || object.movie.original_name));
-      query.push('serial=' + (object.movie.name ? 1 : 0));
-      query.push('original_language=' + (object.movie.original_language || ''));
-      query.push('year=' + ((object.movie.release_date || object.movie.first_air_date || '0000') + '').slice(0, 4));
-      query.push('source=' + card_source);
-      query.push('clarification=' + (object.clarification ? 1 : 0));
-      query.push('similar=' + (object.similar ? true : false));
-      query.push('rchtype=' + (((window.rch_nws && window.rch_nws[hostkey]) ? window.rch_nws[hostkey].type : (window.rch && window.rch[hostkey]) ? window.rch[hostkey].type : '') || ''));
-      if (Lampa.Storage.get('account_email', '')) query.push('cub_id=' + Lampa.Utils.hash(Lampa.Storage.get('account_email', '')));
-      return url + (url.indexOf('?') >= 0 ? '&' : '?') + query.join('&');
-    };
-    this.getLastChoiceBalanser = function() {
-      var last_select_balanser = Lampa.Storage.cache('online_last_balanser', 3000, {});
-      if (last_select_balanser[object.movie.id]) {
-        return last_select_balanser[object.movie.id];
-      } else {
-        return Lampa.Storage.get('online_balanser', filter_sources.length ? filter_sources[0] : '');
-      }
-    };
-    this.startSource = function(json) {
-      return new Promise(function(resolve, reject) {
-        json.forEach(function(j) {
-          var name = balanserName(j);
-          sources[name] = {
-            url: j.url,
-            name: j.name,
-            show: typeof j.show == 'undefined' ? true : j.show
-          };
-        });
-        filter_sources = Lampa.Arrays.getKeys(sources);
-        if (filter_sources.length) {
-          var last_select_balanser = Lampa.Storage.cache('online_last_balanser', 3000, {});
-          if (last_select_balanser[object.movie.id]) {
-            balanser = last_select_balanser[object.movie.id];
-          } else {
-            balanser = Lampa.Storage.get('online_balanser', filter_sources[0]);
-          }
-          if (!sources[balanser]) balanser = filter_sources[0];
-          if (!sources[balanser].show && !object.lampac_custom_select) balanser = filter_sources[0];
-          source = sources[balanser].url;
-          Lampa.Storage.set('active_balanser', balanser);
-          resolve(json);
-        } else {
-          reject();
-        }
-      });
-    };
-    this.lifeSource = function() {
-      var _this3 = this;
-      return new Promise(function(resolve, reject) {
-        var url = _this3.requestParams(Defined.localhost + 'lifeevents?memkey=' + (_this3.memkey || ''));
-        var red = false;
-        var gou = function gou(json, any) {
-          if (json.accsdb) return reject(json);
-          var last_balanser = _this3.getLastChoiceBalanser();
-          if (!red) {
-            var _filter = json.online.filter(function(c) {
-              return any ? c.show : c.show && c.name.toLowerCase() == last_balanser;
-            });
-            if (_filter.length) {
-              red = true;
-              resolve(json.online.filter(function(c) {
-                return c.show;
-              }));
-            } else if (any) {
-              reject();
-            }
-          }
-        };
-        var fin = function fin(call) {
-          network.timeout(3000);
-          network.silent(account(url), function(json) {
-            life_wait_times++;
-            filter_sources = [];
-            sources = {};
-            json.online.forEach(function(j) {
-              var name = balanserName(j);
-              sources[name] = {
-                url: j.url,
-                name: j.name,
-                show: typeof j.show == 'undefined' ? true : j.show
-              };
-            });
-            filter_sources = Lampa.Arrays.getKeys(sources);
-            filter.set('sort', filter_sources.map(function(e) {
-              return {
-                title: sources[e].name,
-                source: e,
-                selected: e == balanser,
-                ghost: !sources[e].show
-              };
-            }));
-            filter.chosen('sort', [sources[balanser] ? sources[balanser].name : balanser]);
-            gou(json);
-            var lastb = _this3.getLastChoiceBalanser();
-            if (life_wait_times > 15 || json.ready) {
-              filter.render().find('.lampac-balanser-loader').remove();
-              gou(json, true);
-            } else if (!red && sources[lastb] && sources[lastb].show) {
-              gou(json, true);
-              life_wait_timer = setTimeout(fin, 1000);
-            } else {
-              life_wait_timer = setTimeout(fin, 1000);
-            }
-          }, function() {
-            life_wait_times++;
-            if (life_wait_times > 15) {
-              reject();
-            } else {
-              life_wait_timer = setTimeout(fin, 1000);
-            }
-          });
-        };
-        fin();
-      });
-    };
-    this.createSource = function() {
-      var _this4 = this;
-      return new Promise(function(resolve, reject) {
-        var url = _this4.requestParams(Defined.localhost + 'lite/events?life=true');
-        network.timeout(15000);
-        network.silent(account(url), function(json) {
-          if (json.accsdb) return reject(json);
-          if (json.life) {
-			_this4.memkey = json.memkey;
-			if (json.title) {
-              if (object.movie.name) object.movie.name = json.title;
-              if (object.movie.title) object.movie.title = json.title;
-			}
-            filter.render().find('.filter--sort').append('<span class="lampac-balanser-loader" style="width: 1.2em; height: 1.2em; margin-top: 0; background: url(./img/loader.svg) no-repeat 50% 50%; background-size: contain; margin-left: 0.5em"></span>');
-            _this4.lifeSource().then(_this4.startSource).then(resolve)["catch"](reject);
-          } else {
-            _this4.startSource(json).then(resolve)["catch"](reject);
-          }
-        }, reject);
-      });
-    };
-    /**
-     * Подготовка
-     */
-    this.create = function() {
-      return this.render();
-    };
-    /**
-     * Начать поиск
-     */
-    this.search = function() { //this.loading(true)
-      this.filter({
-        source: filter_sources
-      }, this.getChoice());
-      this.find();
-    };
-    this.find = function() {
-      this.request(this.requestParams(source));
-    };
-    this.request = function(url) {
-      number_of_requests++;
-      if (number_of_requests < 10) {
-        network["native"](account(url), this.parse.bind(this), this.doesNotAnswer.bind(this), false, {
-          dataType: 'text'
-        });
-        clearTimeout(number_of_requests_timer);
-        number_of_requests_timer = setTimeout(function() {
-          number_of_requests = 0;
-        }, 4000);
-      } else this.empty();
-    };
-    this.parseJsonDate = function(str, name) {
-      try {
-        var html = $('<div>' + str + '</div>');
-        var elems = [];
-        html.find(name).each(function() {
-          var item = $(this);
-          var data = JSON.parse(item.attr('data-json'));
-          var season = item.attr('s');
-          var episode = item.attr('e');
-          var text = item.text();
-          if (!object.movie.name) {
-            if (text.match(/\d+p/i)) {
-              if (!data.quality) {
-                data.quality = {};
-                data.quality[text] = data.url;
-              }
-              text = object.movie.title;
-            }
-            if (text == 'По умолчанию') {
-              text = object.movie.title;
-            }
-          }
-          if (episode) data.episode = parseInt(episode);
-          if (season) data.season = parseInt(season);
-          if (text) data.text = text;
-          data.active = item.hasClass('active');
-          elems.push(data);
-        });
-        return elems;
-      } catch (e) {
-        return [];
-      }
-    };
-    this.getFileUrl = function(file, call, waiting_rch) {
-	  var _this = this;
-	  
-      if(Lampa.Storage.field('player') !== 'inner' && file.stream && Lampa.Platform.is('apple')){
-		  var newfile = Lampa.Arrays.clone(file);
-		  newfile.method = 'play';
-		  newfile.url = file.stream;
-		  call(newfile, {});
-	  }
-      else if (file.method == 'play') call(file, {});
-      else {
-        Lampa.Loading.start(function() {
-          Lampa.Loading.stop();
-          Lampa.Controller.toggle('content');
-          network.clear();
-        });
-        network["native"](account(file.url), function(json) {
-			if(json.rch){
-				if(waiting_rch) {
-					Lampa.Loading.stop();
-					call(false, {});
-				}
-				else {
-					_this.rch(json,function(){
-						Lampa.Loading.stop();
-						
-						_this.getFileUrl(file, call, true);
-					});
-				}
-			}
-			else{
-				Lampa.Loading.stop();
-				call(json, json);
-			}
-        }, function() {
-          Lampa.Loading.stop();
-          call(false, {});
-        });
-      }
-    };
-    this.toPlayElement = function(file) {
-      var play = {
-        title: file.title,
-        url: file.url,
-        quality: file.qualitys,
-        timeline: file.timeline,
-        subtitles: file.subtitles,
-		segments: file.segments,
-        callback: file.mark,
-		season: file.season,
-		episode: file.episode,
-		voice_name: file.voice_name
-      };
-      return play;
-    };
-    this.orUrlReserve = function(data) {
-      if (data.url && typeof data.url == 'string' && data.url.indexOf(" or ") !== -1) {
-        var urls = data.url.split(" or ");
-        data.url = urls[0];
-        data.url_reserve = urls[1];
-      }
-    };
-    this.setDefaultQuality = function(data) {
-      if (Lampa.Arrays.getKeys(data.quality).length) {
-        for (var q in data.quality) {
-          if (parseInt(q) == Lampa.Storage.field('video_quality_default')) {
-            data.url = data.quality[q];
-            this.orUrlReserve(data);
-          }
-          if (data.quality[q].indexOf(" or ") !== -1)
-            data.quality[q] = data.quality[q].split(" or ")[0];
-        }
-      }
-    };
-    this.display = function(videos) {
-      var _this5 = this;
-      this.draw(videos, {
-        onEnter: function onEnter(item, html) {
-          _this5.getFileUrl(item, function(json, json_call) {
-            if (json && json.url) {
-              var playlist = [];
-              var first = _this5.toPlayElement(item);
-              first.url = json.url;
-              first.headers = json_call.headers || json.headers;
-              first.quality = json_call.quality || item.qualitys;
-			  first.segments = json_call.segments || item.segments;
-              first.hls_manifest_timeout = json_call.hls_manifest_timeout || json.hls_manifest_timeout;
-              first.subtitles = json.subtitles;
-			  first.subtitles_call = json_call.subtitles_call || json.subtitles_call;
-			  if (json.vast && json.vast.url) {
-                first.vast_url = json.vast.url;
-                first.vast_msg = json.vast.msg;
-                first.vast_region = json.vast.region;
-                first.vast_platform = json.vast.platform;
-                first.vast_screen = json.vast.screen;
-			  }
-              _this5.orUrlReserve(first);
-              _this5.setDefaultQuality(first);
-              if (item.season) {
-                videos.forEach(function(elem) {
-                  var cell = _this5.toPlayElement(elem);
-                  if (elem == item) cell.url = json.url;
-                  else {
-                    if (elem.method == 'call') {
-                      if (Lampa.Storage.field('player') !== 'inner') {
-                        cell.url = elem.stream;
-						delete cell.quality;
-                      } else {
-                        cell.url = function(call) {
-                          _this5.getFileUrl(elem, function(stream, stream_json) {
-                            if (stream.url) {
-                              cell.url = stream.url;
-                              cell.quality = stream_json.quality || elem.qualitys;
-							  cell.segments = stream_json.segments || elem.segments;
-                              cell.subtitles = stream.subtitles;
-                              _this5.orUrlReserve(cell);
-                              _this5.setDefaultQuality(cell);
-                              elem.mark();
-                            } else {
-                              cell.url = '';
-                              Lampa.Noty.show(Lampa.Lang.translate('lampac_nolink'));
-                            }
-                            call();
-                          }, function() {
-                            cell.url = '';
-                            call();
-                          });
-                        };
-                      }
-                    } else {
-                      cell.url = elem.url;
-                    }
-                  }
-                  _this5.orUrlReserve(cell);
-                  _this5.setDefaultQuality(cell);
-                  playlist.push(cell);
-                }); //Lampa.Player.playlist(playlist) 
-              } else {
-                playlist.push(first);
-              }
-              if (playlist.length > 1) first.playlist = playlist;
-              if (first.url) {
-                var element = first;
-				element.isonline = true;
-                {player-inner}
-                Lampa.Player.play(element);
-                Lampa.Player.playlist(playlist);
-				if(element.subtitles_call) _this5.loadSubtitles(element.subtitles_call)
-                item.mark();
-                _this5.updateBalanser(balanser);
-              } else {
-                Lampa.Noty.show(Lampa.Lang.translate('lampac_nolink'));
-              }
-            } else Lampa.Noty.show(Lampa.Lang.translate('lampac_nolink'));
-          }, true);
-        },
-        onContextMenu: function onContextMenu(item, html, data, call) {
-          _this5.getFileUrl(item, function(stream) {
-            call({
-              file: stream.url,
-              quality: item.qualitys
-            });
-          }, true);
-        }
-      });
-      this.filter({
-        season: filter_find.season.map(function(s) {
-          return s.title;
-        }),
-        voice: filter_find.voice.map(function(b) {
-          return b.title;
-        })
-      }, this.getChoice());
-    };
-	this.loadSubtitles = function(link){
-		network.silent(account(link), function(subs){
-			Lampa.Player.subtitles(subs)
-		})
-	}
-    this.parse = function(str) {
-      var json = Lampa.Arrays.decodeJson(str, {});
-      if (Lampa.Arrays.isObject(str) && str.rch) json = str;
-      if (json.rch) return this.rch(json);
-      try {
-        var items = this.parseJsonDate(str, '.videos__item');
-        var buttons = this.parseJsonDate(str, '.videos__button');
-        if (items.length == 1 && items[0].method == 'link' && !items[0].similar) {
-          filter_find.season = items.map(function(s) {
-            return {
-              title: s.text,
-              url: s.url
-            };
-          });
-          this.replaceChoice({
-            season: 0
-          });
-          this.request(items[0].url);
-        } else {
-          this.activity.loader(false);
-          var videos = items.filter(function(v) {
-            return v.method == 'play' || v.method == 'call';
-          });
-          var similar = items.filter(function(v) {
-            return v.similar;
-          });
-          if (videos.length) {
-            if (buttons.length) {
-              filter_find.voice = buttons.map(function(b) {
-                return {
-                  title: b.text,
-                  url: b.url
-                };
-              });
-              var select_voice_url = this.getChoice(balanser).voice_url;
-              var select_voice_name = this.getChoice(balanser).voice_name;
-              var find_voice_url = buttons.find(function(v) {
-                return v.url == select_voice_url;
-              });
-              var find_voice_name = buttons.find(function(v) {
-                return v.text == select_voice_name;
-              });
-              var find_voice_active = buttons.find(function(v) {
-                return v.active;
-              }); ////console.log('b',buttons)
-              ////console.log('u',find_voice_url)
-              ////console.log('n',find_voice_name)
-              ////console.log('a',find_voice_active)
-              if (find_voice_url && !find_voice_url.active) {
-                //console.log('Lampac', 'go to voice', find_voice_url);
-                this.replaceChoice({
-                  voice: buttons.indexOf(find_voice_url),
-                  voice_name: find_voice_url.text
-                });
-                this.request(find_voice_url.url);
-              } else if (find_voice_name && !find_voice_name.active) {
-                //console.log('Lampac', 'go to voice', find_voice_name);
-                this.replaceChoice({
-                  voice: buttons.indexOf(find_voice_name),
-                  voice_name: find_voice_name.text
-                });
-                this.request(find_voice_name.url);
-              } else {
-                if (find_voice_active) {
-                  this.replaceChoice({
-                    voice: buttons.indexOf(find_voice_active),
-                    voice_name: find_voice_active.text
-                  });
-                }
-                this.display(videos);
-              }
-            } else {
-              this.replaceChoice({
-                voice: 0,
-                voice_url: '',
-                voice_name: ''
-              });
-              this.display(videos);
-            }
-          } else if (items.length) {
-            if (similar.length) {
-              this.similars(similar);
-              this.activity.loader(false);
-            } else { //this.activity.loader(true)
-              filter_find.season = items.map(function(s) {
-                return {
-                  title: s.text,
-                  url: s.url
-                };
-              });
-              var select_season = this.getChoice(balanser).season;
-              var season = filter_find.season[select_season];
-              if (!season) season = filter_find.season[0];
-              //console.log('Lampac', 'go to season', season);
-              this.request(season.url);
-            }
-          } else {
-            this.doesNotAnswer(json);
-          }
-        }
-      } catch (e) {
-        //console.log('Lampac', 'error', e.stack);
-        this.doesNotAnswer(e);
-      }
-    };
-    this.similars = function(json) {
-      var _this6 = this;
-      scroll.clear();
-      json.forEach(function(elem) {
-        elem.title = elem.text;
-        elem.info = '';
-        var info = [];
-        var year = ((elem.start_date || elem.year || object.movie.release_date || object.movie.first_air_date || '') + '').slice(0, 4);
-        if (year) info.push(year);
-        if (elem.details) info.push(elem.details);
-        var name = elem.title || elem.text;
-        elem.title = name;
-        elem.time = elem.time || '';
-        elem.info = info.join('<span class="online-prestige-split">●</span>');
-        var item = Lampa.Template.get('lampac_prestige_folder', elem);
-		if (elem.img) {
-		  var image = $('<img style="height: 7em; width: 7em; border-radius: 0.3em;"/>');
-		  item.find('.online-prestige__folder').empty().append(image);
-
-		  if (elem.img !== undefined) {
-		    if (elem.img.charAt(0) === '/')
-		      elem.img = Defined.localhost + elem.img.substring(1);
-		    if (elem.img.indexOf('/proxyimg') !== -1)
-		      elem.img = account(elem.img);
-		  }
-
-		  Lampa.Utils.imgLoad(image, elem.img);
-		}
-        item.on('hover:enter', function() {
-          _this6.reset();
-          _this6.request(elem.url);
-        }).on('hover:focus', function(e) {
-          last = e.target;
-          scroll.update($(e.target), true);
-        });
-        scroll.append(item);
-      });
-	  this.filter({
-        season: filter_find.season.map(function(s) {
-          return s.title;
-        }),
-        voice: filter_find.voice.map(function(b) {
-          return b.title;
-        })
-      }, this.getChoice());
-      Lampa.Controller.enable('content');
-    };
-    this.getChoice = function(for_balanser) {
-      var data = Lampa.Storage.cache('online_choice_' + (for_balanser || balanser), 3000, {});
-      var save = data[object.movie.id] || {};
-      Lampa.Arrays.extend(save, {
-        season: 0,
-        voice: 0,
-        voice_name: '',
-        voice_id: 0,
-        episodes_view: {},
-        movie_view: ''
-      });
-      return save;
-    };
-    this.saveChoice = function(choice, for_balanser) {
-      var data = Lampa.Storage.cache('online_choice_' + (for_balanser || balanser), 3000, {});
-      data[object.movie.id] = choice;
-      Lampa.Storage.set('online_choice_' + (for_balanser || balanser), data);
-      this.updateBalanser(for_balanser || balanser);
-    };
-    this.replaceChoice = function(choice, for_balanser) {
-      var to = this.getChoice(for_balanser);
-      Lampa.Arrays.extend(to, choice, true);
-      this.saveChoice(to, for_balanser);
-    };
-    this.clearImages = function() {
-      images.forEach(function(img) {
-        img.onerror = function() {};
-        img.onload = function() {};
-        img.src = '';
-      });
-      images = [];
-    };
-    /**
-     * Очистить список файлов
-     */
-    this.reset = function() {
-      last = false;
-      clearInterval(balanser_timer);
-      network.clear();
-      this.clearImages();
-      scroll.render().find('.empty').remove();
-      scroll.clear();
-      scroll.reset();
-      scroll.body().append(Lampa.Template.get('lampac_content_loading'));
-    };
-    /**
-     * Загрузка
-     */
-    this.loading = function(status) {
-      if (status) this.activity.loader(true);
-      else {
-        this.activity.loader(false);
-        this.activity.toggle();
-      }
-    };
-    /**
-     * Построить фильтр
-     */
-    this.filter = function(filter_items, choice) {
-      var _this7 = this;
-      var select = [];
-      var add = function add(type, title) {
-        var need = _this7.getChoice();
-        var items = filter_items[type];
-        var subitems = [];
-        var value = need[type];
-        items.forEach(function(name, i) {
-          subitems.push({
-            title: name,
-            selected: value == i,
-            index: i
-          });
-        });
-        select.push({
-          title: title,
-          subtitle: items[value],
-          items: subitems,
-          stype: type
-        });
-      };
-      filter_items.source = filter_sources;
-      select.push({
-        title: Lampa.Lang.translate('torrent_parser_reset'),
-        reset: true
-      });
-      this.saveChoice(choice);
-      if (filter_items.voice && filter_items.voice.length) add('voice', Lampa.Lang.translate('torrent_parser_voice'));
-      if (filter_items.season && filter_items.season.length) add('season', Lampa.Lang.translate('torrent_serial_season'));
-      filter.set('filter', select);
-      filter.set('sort', filter_sources.map(function(e) {
-        return {
-          title: sources[e].name,
-          source: e,
-          selected: e == balanser,
-          ghost: !sources[e].show
-        };
-      }));
-      this.selected(filter_items);
-    };
-    /**
-     * Показать что выбрано в фильтре
-     */
-    this.selected = function(filter_items) {
-      var need = this.getChoice(),
-        select = [];
-      for (var i in need) {
-        if (filter_items[i] && filter_items[i].length) {
-          if (i == 'voice') {
-            select.push(filter_translate[i] + ': ' + filter_items[i][need[i]]);
-          } else if (i !== 'source') {
-            if (filter_items.season.length >= 1) {
-              select.push(filter_translate.season + ': ' + filter_items[i][need[i]]);
-            }
-          }
-        }
-      }
-      filter.chosen('filter', select);
-      filter.chosen('sort', [sources[balanser].name]);
-    };
-    this.getEpisodes = function(season, call) {
-      var episodes = [];
-	  var tmdb_id = object.movie.id;
-	  if (['cub', 'tmdb'].indexOf(object.movie.source || 'tmdb') == -1) 
-        tmdb_id = object.movie.tmdb_id;
-      if (typeof tmdb_id == 'number' && object.movie.name) {
-        var tmdburl = 'tv/' + tmdb_id + '/season/' + season + '?api_key=' + Lampa.TMDB.key() + '&language=' + Lampa.Storage.get('language', 'ru');
-        var baseurl = Lampa.TMDB.api(tmdburl);
-        network.timeout(1000 * 10);
-        network["native"](baseurl, function(data) {
-          episodes = data.episodes || [];
-          call(episodes);
-        }, function(a, c) {
-          call(episodes);
-        });
-      } else call(episodes);
-    };
-    this.watched = function(set) {
-      var file_id = Lampa.Utils.hash(object.movie.number_of_seasons ? object.movie.original_name : object.movie.original_title);
-      var watched = Lampa.Storage.cache('online_watched_last', 5000, {});
-      if (set) {
-        if (!watched[file_id]) watched[file_id] = {};
-        Lampa.Arrays.extend(watched[file_id], set, true);
-        Lampa.Storage.set('online_watched_last', watched);
-        this.updateWatched();
-      } else {
-        return watched[file_id];
-      }
-    };
-    this.updateWatched = function() {
-      var watched = this.watched();
-      var body = scroll.body().find('.online-prestige-watched .online-prestige-watched__body').empty();
-      if (watched) {
-        var line = [];
-        if (watched.balanser_name) line.push(watched.balanser_name);
-        if (watched.voice_name) line.push(watched.voice_name);
-        if (watched.season) line.push(Lampa.Lang.translate('torrent_serial_season') + ' ' + watched.season);
-        if (watched.episode) line.push(Lampa.Lang.translate('torrent_serial_episode') + ' ' + watched.episode);
-        line.forEach(function(n) {
-          body.append('<span>' + n + '</span>');
-        });
-      } else body.append('<span>' + Lampa.Lang.translate('lampac_no_watch_history') + '</span>');
-    };
-    /**
-     * Отрисовка файлов
-     */
-    this.draw = function(items) {
-      var _this8 = this;
-      var params = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {};
-      if (!items.length) return this.empty();
-      scroll.clear();
-      if(!object.balanser)scroll.append(Lampa.Template.get('lampac_prestige_watched', {}));
-      this.updateWatched();
-      this.getEpisodes(items[0].season, function(episodes) {
-        var viewed = Lampa.Storage.cache('online_view', 5000, []);
-        var serial = object.movie.name ? true : false;
-        var choice = _this8.getChoice();
-        var fully = window.innerWidth > 480;
-        var scroll_to_element = false;
-        var scroll_to_mark = false;
-        items.forEach(function(element, index) {
-          var episode = serial && episodes.length && !params.similars ? episodes.find(function(e) {
-            return e.episode_number == element.episode;
-          }) : false;
-          var episode_num = element.episode || index + 1;
-          var episode_last = choice.episodes_view[element.season];
-          var voice_name = choice.voice_name || (filter_find.voice[0] ? filter_find.voice[0].title : false) || element.voice_name || (serial ? 'Неизвестно' : element.text) || 'Неизвестно';
-          if (element.quality) {
-            element.qualitys = element.quality;
-            element.quality = Lampa.Arrays.getKeys(element.quality)[0];
-          }
-          Lampa.Arrays.extend(element, {
-            voice_name: voice_name,
-            info: voice_name.length > 60 ? voice_name.substr(0, 60) + '...' : voice_name,
-            quality: '',
-            time: Lampa.Utils.secondsToTime((episode ? episode.runtime : object.movie.runtime) * 60, true)
-          });
-          var hash_timeline = Lampa.Utils.hash(element.season ? [element.season, element.season > 10 ? ':' : '', element.episode, object.movie.original_title].join('') : object.movie.original_title);
-          var hash_behold = Lampa.Utils.hash(element.season ? [element.season, element.season > 10 ? ':' : '', element.episode, object.movie.original_title, element.voice_name].join('') : object.movie.original_title + element.voice_name);
-          var data = {
-            hash_timeline: hash_timeline,
-            hash_behold: hash_behold
-          };
-          var info = [];
-          if (element.season) {
-            element.translate_episode_end = _this8.getLastEpisode(items);
-            element.translate_voice = element.voice_name;
-          }
-          if (element.text && !episode) element.title = element.text;
-          element.timeline = Lampa.Timeline.view(hash_timeline);
-          if (episode) {
-            element.title = episode.name;
-            if (element.info.length < 30 && episode.vote_average) info.push(Lampa.Template.get('lampac_prestige_rate', {
-              rate: parseFloat(episode.vote_average + '').toFixed(1)
-            }, true));
-            if (episode.air_date && fully) info.push(Lampa.Utils.parseTime(episode.air_date).full);
-          } else if (object.movie.release_date && fully) {
-            info.push(Lampa.Utils.parseTime(object.movie.release_date).full);
-          }
-          if (!serial && object.movie.tagline && element.info.length < 30) info.push(object.movie.tagline);
-          if (element.info) info.push(element.info);
-          if (info.length) element.info = info.map(function(i) {
-            return '<span>' + i + '</span>';
-          }).join('<span class="online-prestige-split">●</span>');
-          var html = Lampa.Template.get('lampac_prestige_full', element);
-          var loader = html.find('.online-prestige__loader');
-          var image = html.find('.online-prestige__img');
-		  if(object.balanser) image.hide();
-          if (!serial) {
-            if (choice.movie_view == hash_behold) scroll_to_element = html;
-          } else if (typeof episode_last !== 'undefined' && episode_last == episode_num) {
-            scroll_to_element = html;
-          }
-          if (serial && !episode) {
-            image.append('<div class="online-prestige__episode-number">' + ('0' + (element.episode || index + 1)).slice(-2) + '</div>');
-            loader.remove();
-          }
-		  else if (!serial && object.movie.backdrop_path == 'undefined') loader.remove();
-          else {
-            var img = html.find('img')[0];
-            img.onerror = function() {
-              img.src = './img/img_broken.svg';
-            };
-            img.onload = function() {
-              image.addClass('online-prestige__img--loaded');
-              loader.remove();
-              if (serial) image.append('<div class="online-prestige__episode-number">' + ('0' + (element.episode || index + 1)).slice(-2) + '</div>');
-            };
-            img.src = Lampa.TMDB.image('t/p/w300' + (episode ? episode.still_path : object.movie.backdrop_path));
-            images.push(img);
-          }
-          html.find('.online-prestige__timeline').append(Lampa.Timeline.render(element.timeline));
-          if (viewed.indexOf(hash_behold) !== -1) {
-            scroll_to_mark = html;
-            html.find('.online-prestige__img').append('<div class="online-prestige__viewed">' + Lampa.Template.get('icon_viewed', {}, true) + '</div>');
-          }
-          element.mark = function() {
-            viewed = Lampa.Storage.cache('online_view', 5000, []);
-            if (viewed.indexOf(hash_behold) == -1) {
-              viewed.push(hash_behold);
-              Lampa.Storage.set('online_view', viewed);
-              if (html.find('.online-prestige__viewed').length == 0) {
-                html.find('.online-prestige__img').append('<div class="online-prestige__viewed">' + Lampa.Template.get('icon_viewed', {}, true) + '</div>');
-              }
-            }
-            choice = _this8.getChoice();
-            if (!serial) {
-              choice.movie_view = hash_behold;
-            } else {
-              choice.episodes_view[element.season] = episode_num;
-            }
-            _this8.saveChoice(choice);
-            var voice_name_text = choice.voice_name || element.voice_name || element.title;
-            if (voice_name_text.length > 30) voice_name_text = voice_name_text.slice(0, 30) + '...';
-            _this8.watched({
-              balanser: balanser,
-              balanser_name: Lampa.Utils.capitalizeFirstLetter(sources[balanser] ? sources[balanser].name.split(' ')[0] : balanser),
-              voice_id: choice.voice_id,
-              voice_name: voice_name_text,
-              episode: element.episode,
-              season: element.season
-            });
-          };
-          element.unmark = function() {
-            viewed = Lampa.Storage.cache('online_view', 5000, []);
-            if (viewed.indexOf(hash_behold) !== -1) {
-              Lampa.Arrays.remove(viewed, hash_behold);
-              Lampa.Storage.set('online_view', viewed);
-              Lampa.Storage.remove('online_view', hash_behold);
-              html.find('.online-prestige__viewed').remove();
-            }
-          };
-          element.timeclear = function() {
-            element.timeline.percent = 0;
-            element.timeline.time = 0;
-            element.timeline.duration = 0;
-            Lampa.Timeline.update(element.timeline);
-          };
-          html.on('hover:enter', function() {
-            if (object.movie.id) Lampa.Favorite.add('history', object.movie, 100);
-            if (params.onEnter) params.onEnter(element, html, data);
-          }).on('hover:focus', function(e) {
-            last = e.target;
-            if (params.onFocus) params.onFocus(element, html, data);
-            scroll.update($(e.target), true);
-          });
-          if (params.onRender) params.onRender(element, html, data);
-          _this8.contextMenu({
-            html: html,
-            element: element,
-            onFile: function onFile(call) {
-              if (params.onContextMenu) params.onContextMenu(element, html, data, call);
-            },
-            onClearAllMark: function onClearAllMark() {
-              items.forEach(function(elem) {
-                elem.unmark();
-              });
-            },
-            onClearAllTime: function onClearAllTime() {
-              items.forEach(function(elem) {
-                elem.timeclear();
-              });
-            }
-          });
-          scroll.append(html);
-        });
-        if (serial && episodes.length > items.length && !params.similars) {
-          var left = episodes.slice(items.length);
-          left.forEach(function(episode) {
-            var info = [];
-            if (episode.vote_average) info.push(Lampa.Template.get('lampac_prestige_rate', {
-              rate: parseFloat(episode.vote_average + '').toFixed(1)
-            }, true));
-            if (episode.air_date) info.push(Lampa.Utils.parseTime(episode.air_date).full);
-            var air = new Date((episode.air_date + '').replace(/-/g, '/'));
-            var now = Date.now();
-            var day = Math.round((air.getTime() - now) / (24 * 60 * 60 * 1000));
-            var txt = Lampa.Lang.translate('full_episode_days_left') + ': ' + day;
-            var html = Lampa.Template.get('lampac_prestige_full', {
-              time: Lampa.Utils.secondsToTime((episode ? episode.runtime : object.movie.runtime) * 60, true),
-              info: info.length ? info.map(function(i) {
-                return '<span>' + i + '</span>';
-              }).join('<span class="online-prestige-split">●</span>') : '',
-              title: episode.name,
-              quality: day > 0 ? txt : ''
-            });
-            var loader = html.find('.online-prestige__loader');
-            var image = html.find('.online-prestige__img');
-            var season = items[0] ? items[0].season : 1;
-            html.find('.online-prestige__timeline').append(Lampa.Timeline.render(Lampa.Timeline.view(Lampa.Utils.hash([season, episode.episode_number, object.movie.original_title].join('')))));
-            var img = html.find('img')[0];
-            if (episode.still_path) {
-              img.onerror = function() {
-                img.src = './img/img_broken.svg';
-              };
-              img.onload = function() {
-                image.addClass('online-prestige__img--loaded');
-                loader.remove();
-                image.append('<div class="online-prestige__episode-number">' + ('0' + episode.episode_number).slice(-2) + '</div>');
-              };
-              img.src = Lampa.TMDB.image('t/p/w300' + episode.still_path);
-              images.push(img);
-            } else {
-              loader.remove();
-              image.append('<div class="online-prestige__episode-number">' + ('0' + episode.episode_number).slice(-2) + '</div>');
-            }
-            html.on('hover:focus', function(e) {
-              last = e.target;
-              scroll.update($(e.target), true);
-            });
-            html.css('opacity', '0.5');
-            scroll.append(html);
-          });
-        }
-        if (scroll_to_element) {
-          last = scroll_to_element[0];
-        } else if (scroll_to_mark) {
-          last = scroll_to_mark[0];
-        }
-        Lampa.Controller.enable('content');
-      });
-    };
-    /**
-     * Меню
-     */
-    this.contextMenu = function(params) {
-      params.html.on('hover:long', function() {
-        function show(extra) {
-          var enabled = Lampa.Controller.enabled().name;
-          var menu = [];
-          if (Lampa.Platform.is('webos')) {
-            menu.push({
-              title: Lampa.Lang.translate('player_lauch') + ' - Webos',
-              player: 'webos'
-            });
-          }
-          if (Lampa.Platform.is('android')) {
-            menu.push({
-              title: Lampa.Lang.translate('player_lauch') + ' - Android',
-              player: 'android'
-            });
-          }
-          menu.push({
-            title: Lampa.Lang.translate('player_lauch') + ' - Lampa',
-            player: 'lampa'
-          });
-          menu.push({
-            title: Lampa.Lang.translate('lampac_video'),
-            separator: true
-          });
-          menu.push({
-            title: Lampa.Lang.translate('torrent_parser_label_title'),
-            mark: true
-          });
-          menu.push({
-            title: Lampa.Lang.translate('torrent_parser_label_cancel_title'),
-            unmark: true
-          });
-          menu.push({
-            title: Lampa.Lang.translate('time_reset'),
-            timeclear: true
-          });
-          if (extra) {
-            menu.push({
-              title: Lampa.Lang.translate('copy_link'),
-              copylink: true
-            });
-          }
-          if (window.lampac_online_context_menu)
-            window.lampac_online_context_menu.push(menu, extra, params);
-          menu.push({
-            title: Lampa.Lang.translate('more'),
-            separator: true
-          });
-          if (Lampa.Account.logged() && params.element && typeof params.element.season !== 'undefined' && params.element.translate_voice) {
-            menu.push({
-              title: Lampa.Lang.translate('lampac_voice_subscribe'),
-              subscribe: true
-            });
-          }
-          menu.push({
-            title: Lampa.Lang.translate('lampac_clear_all_marks'),
-            clearallmark: true
-          });
-          menu.push({
-            title: Lampa.Lang.translate('lampac_clear_all_timecodes'),
-            timeclearall: true
-          });
-          Lampa.Select.show({
-            title: Lampa.Lang.translate('title_action'),
-            items: menu,
-            onBack: function onBack() {
-              Lampa.Controller.toggle(enabled);
-            },
-            onSelect: function onSelect(a) {
-              if (a.mark) params.element.mark();
-              if (a.unmark) params.element.unmark();
-              if (a.timeclear) params.element.timeclear();
-              if (a.clearallmark) params.onClearAllMark();
-              if (a.timeclearall) params.onClearAllTime();
-              if (window.lampac_online_context_menu)
-                window.lampac_online_context_menu.onSelect(a, params);
-              Lampa.Controller.toggle(enabled);
-              if (a.player) {
-                Lampa.Player.runas(a.player);
-                params.html.trigger('hover:enter');
-              }
-              if (a.copylink) {
-                if (extra.quality) {
-                  var qual = [];
-                  for (var i in extra.quality) {
-                    qual.push({
-                      title: i,
-                      file: extra.quality[i]
-                    });
-                  }
-                  Lampa.Select.show({
-                    title: Lampa.Lang.translate('settings_server_links'),
-                    items: qual,
-                    onBack: function onBack() {
-                      Lampa.Controller.toggle(enabled);
-                    },
-                    onSelect: function onSelect(b) {
-                      Lampa.Utils.copyTextToClipboard(b.file, function() {
-                        Lampa.Noty.show(Lampa.Lang.translate('copy_secuses'));
-                      }, function() {
-                        Lampa.Noty.show(Lampa.Lang.translate('copy_error'));
-                      });
-                    }
-                  });
-                } else {
-                  Lampa.Utils.copyTextToClipboard(extra.file, function() {
-                    Lampa.Noty.show(Lampa.Lang.translate('copy_secuses'));
-                  }, function() {
-                    Lampa.Noty.show(Lampa.Lang.translate('copy_error'));
-                  });
-                }
-              }
-              if (a.subscribe) {
-                Lampa.Account.subscribeToTranslation({
-                  card: object.movie,
-                  season: params.element.season,
-                  episode: params.element.translate_episode_end,
-                  voice: params.element.translate_voice
-                }, function() {
-                  Lampa.Noty.show(Lampa.Lang.translate('lampac_voice_success'));
-                }, function() {
-                  Lampa.Noty.show(Lampa.Lang.translate('lampac_voice_error'));
-                });
-              }
-            }
-          });
-        }
-        params.onFile(show);
-      }).on('hover:focus', function() {
-        if (Lampa.Helper) Lampa.Helper.show('online_file', Lampa.Lang.translate('helper_online_file'), params.html);
-      });
-    };
-    /**
-     * Показать пустой результат
-     */
-    this.empty = function() {
-      var html = Lampa.Template.get('lampac_does_not_answer', {});
-      html.find('.online-empty__buttons').remove();
-      html.find('.online-empty__title').text(Lampa.Lang.translate('empty_title_two'));
-      html.find('.online-empty__time').text(Lampa.Lang.translate('empty_text'));
-      scroll.clear();
-      scroll.append(html);
-      this.loading(false);
-    };
-    this.noConnectToServer = function(er) {
-      var html = Lampa.Template.get('lampac_does_not_answer', {});
-      html.find('.online-empty__buttons').remove();
-      html.find('.online-empty__title').text(Lampa.Lang.translate('title_error'));
-      html.find('.online-empty__time').text(er && er.accsdb ? er.msg : Lampa.Lang.translate('lampac_does_not_answer_text').replace('{balanser}', balanser[balanser].name));
-      scroll.clear();
-      scroll.append(html);
-      this.loading(false);
-    };
-    this.doesNotAnswer = function(er) {
-      var _this9 = this;
-      this.reset();
-      var html = Lampa.Template.get('lampac_does_not_answer', {
-        balanser: balanser
-      });
-      if(er && er.accsdb) html.find('.online-empty__title').html(er.msg);
-	  
-      var tic = er && er.accsdb ? 10 : 5;
-      html.find('.cancel').on('hover:enter', function() {
-        clearInterval(balanser_timer);
-      });
-      html.find('.change').on('hover:enter', function() {
-        clearInterval(balanser_timer);
-        filter.render().find('.filter--sort').trigger('hover:enter');
-      });
-      scroll.clear();
-      scroll.append(html);
-      this.loading(false);
-      balanser_timer = setInterval(function() {
-        tic--;
-        html.find('.timeout').text(tic);
-        if (tic == 0) {
-          clearInterval(balanser_timer);
-          var keys = Lampa.Arrays.getKeys(sources);
-          var indx = keys.indexOf(balanser);
-          var next = keys[indx + 1];
-          if (!next) next = keys[0];
-          balanser = next;
-          if (Lampa.Activity.active().activity == _this9.activity) _this9.changeBalanser(balanser);
-        }
-      }, 1000);
-    };
-    this.getLastEpisode = function(items) {
-      var last_episode = 0;
-      items.forEach(function(e) {
-        if (typeof e.episode !== 'undefined') last_episode = Math.max(last_episode, parseInt(e.episode));
-      });
-      return last_episode;
-    };
-    /**
-     * Начать навигацию по файлам
-     */
-    this.start = function() {
-      if (Lampa.Activity.active().activity !== this.activity) return;
-      if (!initialized) {
-        initialized = true;
-        this.initialize();
-      }
-      Lampa.Background.immediately(Lampa.Utils.cardImgBackgroundBlur(object.movie));
-      Lampa.Controller.add('content', {
-        toggle: function toggle() {
-          Lampa.Controller.collectionSet(scroll.render(), files.render());
-          Lampa.Controller.collectionFocus(last || false, scroll.render());
-        },
-        gone: function gone() {
-          clearTimeout(balanser_timer);
-        },
-        up: function up() {
-          if (Navigator.canmove('up')) {
-            Navigator.move('up');
-          } else Lampa.Controller.toggle('head');
-        },
-        down: function down() {
-          Navigator.move('down');
-        },
-        right: function right() {
-          if (Navigator.canmove('right')) Navigator.move('right');
-          else filter.show(Lampa.Lang.translate('title_filter'), 'filter');
-        },
-        left: function left() {
-          if (Navigator.canmove('left')) Navigator.move('left');
-          else Lampa.Controller.toggle('menu');
-        },
-        back: this.back.bind(this)
-      });
-      Lampa.Controller.toggle('content');
-    };
-    this.render = function() {
-      return files.render();
-    };
-    this.back = function() {
-      Lampa.Activity.backward();
-    };
-    this.pause = function() {};
-    this.stop = function() {};
-    this.destroy = function() {
-      network.clear();
-      this.clearImages();
-      files.destroy();
-      scroll.destroy();
-      clearInterval(balanser_timer);
-      clearTimeout(life_wait_timer);
-    };
-  }
-  
-  function addSourceSearch(spiderName, spiderUri) {
-    var network = new Lampa.Reguest();
-
-    var source = {
-      title: spiderName,
-      search: function(params, oncomplite) {
-        function searchComplite(links) {
-          var keys = Lampa.Arrays.getKeys(links);
-
-          if (keys.length) {
-            var status = new Lampa.Status(keys.length);
-
-            status.onComplite = function(result) {
-              var rows = [];
-
-              keys.forEach(function(name) {
-                var line = result[name];
-
-                if (line && line.data && line.type == 'similar') {
-                  var cards = line.data.map(function(item) {
-                    item.title = Lampa.Utils.capitalizeFirstLetter(item.title);
-                    item.release_date = item.year || '0000';
-                    item.balanser = spiderUri;
-                    if (item.img !== undefined) {
-                      if (item.img.charAt(0) === '/')
-                        item.img = Defined.localhost + item.img.substring(1);
-                      if (item.img.indexOf('/proxyimg') !== -1)
-                        item.img = account(item.img);
-                    }
-
-                    return item;
-                  })
-
-                  rows.push({
-                    title: name,
-                    results: cards
-                  })
-                }
-              })
-
-              oncomplite(rows);
-            }
-
-            keys.forEach(function(name) {
-              network.silent(account(links[name]), function(data) {
-                status.append(name, data);
-              }, function() {
-                status.error();
-              })
-            })
-          } else {
-            oncomplite([]);
-          }
-        }
-
-        network.silent(account(Defined.localhost + 'lite/' + spiderUri + '?title=' + params.query), function(json) {
-          if (json.rch) {
-            rchRun(json, function() {
-              network.silent(account(Defined.localhost + 'lite/' + spiderUri + '?title=' + params.query), function(links) {
-                searchComplite(links);
-              }, function() {
-                oncomplite([]);
-              });
-            });
-          } else {
-            searchComplite(json);
-          }
-        }, function() {
-          oncomplite([]);
-        });
-      },
-      onCancel: function() {
-        network.clear()
-      },
-      params: {
-        lazy: true,
-        align_left: true,
-        card_events: {
-          onMenu: function() {}
-        }
-      },
-      onMore: function(params, close) {
-        close();
-      },
-      onSelect: function(params, close) {
-        close();
-
-        Lampa.Activity.push({
-          url: params.element.url,
-          title: 'Lampac - ' + params.element.title,
-          component: 'lampac',
-          movie: params.element,
-          page: 1,
-          search: params.element.title,
-          clarification: true,
-          balanser: params.element.balanser,
-          noinfo: true
-        });
-      }
-    }
-
-    Lampa.Search.addSource(source)
-  }
-
-  function startPlugin() {
-    window.lampac_plugin = true;
-    var manifst = {
-      type: 'video',
-      version: '1.6.4',
-      name: 'Lampac',
-      description: 'Плагин для просмотра онлайн сериалов и фильмов',
-      component: 'lampac',
-      onContextMenu: function onContextMenu(object) {
-        return {
-          name: Lampa.Lang.translate('lampac_watch'),
-          description: ''
-        };
-      },
-      onContextLauch: function onContextLauch(object) {
-        resetTemplates();
-        Lampa.Component.add('lampac', component);
-		
-		var id = Lampa.Utils.hash(object.number_of_seasons ? object.original_name : object.original_title);
-		var all = Lampa.Storage.get('clarification_search','{}');
-		
-        Lampa.Activity.push({
-          url: '',
-          title: Lampa.Lang.translate('title_online'),
-          component: 'lampac',
-          search: all[id] ? all[id] : object.title,
-          search_one: object.title,
-          search_two: object.original_title,
-          movie: object,
-          page: 1,
-		  clarification: all[id] ? true : false
-        });
-      }
-    };
-	addSourceSearch('Spider', 'spider');
-	addSourceSearch('Anime', 'spider/anime');
-    Lampa.Manifest.plugins = manifst;
+    'use strict';
+    
     Lampa.Lang.add({
-      lampac_watch: { //
-        ru: 'Смотреть онлайн',
-        en: 'Watch online',
-        uk: 'Дивитися онлайн',
-        zh: '在线观看'
-      },
-      lampac_video: { //
-        ru: 'Видео',
-        en: 'Video',
-        uk: 'Відео',
-        zh: '视频'
-      },
-      lampac_no_watch_history: {
-        ru: 'Нет истории просмотра',
-        en: 'No browsing history',
-        ua: 'Немає історії перегляду',
-        zh: '没有浏览历史'
-      },
-      lampac_nolink: {
-        ru: 'Не удалось извлечь ссылку',
-        uk: 'Неможливо отримати посилання',
-        en: 'Failed to fetch link',
-        zh: '获取链接失败'
-      },
-      lampac_balanser: { //
-        ru: 'Источник',
-        uk: 'Джерело',
-        en: 'Source',
-        zh: '来源'
-      },
-      helper_online_file: { //
-        ru: 'Удерживайте клавишу "ОК" для вызова контекстного меню',
-        uk: 'Утримуйте клавішу "ОК" для виклику контекстного меню',
-        en: 'Hold the "OK" key to bring up the context menu',
-        zh: '按住“确定”键调出上下文菜单'
-      },
-      title_online: { //
-        ru: 'Онлайн',
-        uk: 'Онлайн',
-        en: 'Online',
-        zh: '在线的'
-      },
-      lampac_voice_subscribe: { //
-        ru: 'Подписаться на перевод',
-        uk: 'Підписатися на переклад',
-        en: 'Subscribe to translation',
-        zh: '订阅翻译'
-      },
-      lampac_voice_success: { //
-        ru: 'Вы успешно подписались',
-        uk: 'Ви успішно підписалися',
-        en: 'You have successfully subscribed',
-        zh: '您已成功订阅'
-      },
-      lampac_voice_error: { //
-        ru: 'Возникла ошибка',
-        uk: 'Виникла помилка',
-        en: 'An error has occurred',
-        zh: '发生了错误'
-      },
-      lampac_clear_all_marks: { //
-        ru: 'Очистить все метки',
-        uk: 'Очистити всі мітки',
-        en: 'Clear all labels',
-        zh: '清除所有标签'
-      },
-      lampac_clear_all_timecodes: { //
-        ru: 'Очистить все тайм-коды',
-        uk: 'Очистити всі тайм-коди',
-        en: 'Clear all timecodes',
-        zh: '清除所有时间代码'
-      },
-      lampac_change_balanser: { //
-        ru: 'Изменить балансер',
-        uk: 'Змінити балансер',
-        en: 'Change balancer',
-        zh: '更改平衡器'
-      },
-      lampac_balanser_dont_work: { //
-        ru: 'Поиск на ({balanser}) не дал результатов',
-        uk: 'Пошук на ({balanser}) не дав результатів',
-        en: 'Search on ({balanser}) did not return any results',
-        zh: '搜索 ({balanser}) 未返回任何结果'
-      },
-      lampac_balanser_timeout: { //
-        ru: 'Источник будет переключен автоматически через <span class="timeout">10</span> секунд.',
-        uk: 'Джерело буде автоматично переключено через <span class="timeout">10</span> секунд.',
-        en: 'The source will be switched automatically after <span class="timeout">10</span> seconds.',
-        zh: '平衡器将在<span class="timeout">10</span>秒内自动切换。'
-      },
-      lampac_does_not_answer_text: {
-        ru: 'Поиск на ({balanser}) не дал результатов',
-        uk: 'Пошук на ({balanser}) не дав результатів',
-        en: 'Search on ({balanser}) did not return any results',
-        zh: '搜索 ({balanser}) 未返回任何结果'
-      }
+        maxsm_themes: {
+            ru: "Темы",
+            en: "Themes",
+            uk: "Теми",
+            be: "Тэмы",
+            zh: "主题",
+            pt: "Temas",
+            bg: "Теми",
+            he: "ערכות נושא",
+            cs: "Témata"
+        },
+        maxsm_themes_theme: {
+            ru: "Тема оформления",
+            en: "Interface theme",
+            uk: "Тема оформлення",
+            be: "Тэма афармлення",
+            zh: "界面主题",
+            pt: "Tema de interface",
+            bg: "Тема на интерфейса",
+            he: "ערכת נושא לממשק",
+            cs: "Téma rozhraní"
+        },
+        maxsm_themes_animations: {
+            ru: "Анимации",
+            en: "Animations",
+            uk: "Анімації",
+            be: "Анімацыі",
+            zh: "动画",
+            pt: "Animações",
+            bg: "Анимации",
+            he: "אנימציות",
+            cs: "Animace"
+        },
+        maxsm_themes_translate_tv: {
+            ru: "Переводить TV",
+            en: "Translate TV",
+            uk: "Перекладати TV",
+            be: "Перакладаць TV",
+            zh: "翻译 TV",
+            pt: "Traduzir TV",
+            bg: "Превеждане на TV",
+            he: "לתרגם TV",
+            cs: "Přeložit TV"
+        },
+        maxsm_themes_tvcaption: {
+            ru: "СЕРИАЛ",       
+            en: "SERIES",   
+            uk: "СЕРІАЛ",    
+            be: "СЕРЫЯЛ",     
+            zh: "剧集",       
+            pt: "SÉRIE",     
+            bg: "СЕРИАЛ",      
+            he: "סִדְרָה",  
+            cs: "SERIÁL" 
+        },
+        maxsm_themes_incardtemplate: {
+            ru: "Макет содержимого карточки",
+            en: "Card content layout",
+            uk: "Макет вмісту картки",
+            be: "Макет змесціва карткі",
+            zh: "卡片内容布局",
+            pt: "Layout do conteúdo do cartão",
+            bg: "Оформление на съдържанието в картата",
+            he: "פריסת תוכן בכרטיס",
+            cs: "Rozvržení obsahu karty"
+        },
+        maxsm_themes_bigbuttons: {
+            ru: "Большие кнопки в карточке",
+            en: "Large buttons in card",
+            uk: "Великі кнопки в картці",
+            be: "Вялікія кнопкі ў картцы",
+            zh: "卡片中的大按钮",
+            pt: "Botões grandes no cartão",
+            bg: "Големи бутони в картата",
+            he: "כפתורים גדולים בכרטיס",
+            cs: "Velká tlačítka v kartě"
+        }
     });
-    Lampa.Template.add('lampac_css', "\n        <style>\n        @charset 'UTF-8';.online-prestige{position:relative;-webkit-border-radius:.3em;border-radius:.3em;background-color:rgba(0,0,0,0.3);display:-webkit-box;display:-webkit-flex;display:-moz-box;display:-ms-flexbox;display:flex}.online-prestige__body{padding:1.2em;line-height:1.3;-webkit-box-flex:1;-webkit-flex-grow:1;-moz-box-flex:1;-ms-flex-positive:1;flex-grow:1;position:relative}@media screen and (max-width:480px){.online-prestige__body{padding:.8em 1.2em}}.online-prestige__img{position:relative;width:13em;-webkit-flex-shrink:0;-ms-flex-negative:0;flex-shrink:0;min-height:8.2em}.online-prestige__img>img{position:absolute;top:0;left:0;width:100%;height:100%;-o-object-fit:cover;object-fit:cover;-webkit-border-radius:.3em;border-radius:.3em;opacity:0;-webkit-transition:opacity .3s;-o-transition:opacity .3s;-moz-transition:opacity .3s;transition:opacity .3s}.online-prestige__img--loaded>img{opacity:1}@media screen and (max-width:480px){.online-prestige__img{width:7em;min-height:6em}}.online-prestige__folder{padding:1em;-webkit-flex-shrink:0;-ms-flex-negative:0;flex-shrink:0}.online-prestige__folder>svg{width:4.4em !important;height:4.4em !important}.online-prestige__viewed{position:absolute;top:1em;left:1em;background:rgba(0,0,0,0.45);-webkit-border-radius:100%;border-radius:100%;padding:.25em;font-size:.76em}.online-prestige__viewed>svg{width:1.5em !important;height:1.5em !important}.online-prestige__episode-number{position:absolute;top:0;left:0;right:0;bottom:0;display:-webkit-box;display:-webkit-flex;display:-moz-box;display:-ms-flexbox;display:flex;-webkit-box-align:center;-webkit-align-items:center;-moz-box-align:center;-ms-flex-align:center;align-items:center;-webkit-box-pack:center;-webkit-justify-content:center;-moz-box-pack:center;-ms-flex-pack:center;justify-content:center;font-size:2em}.online-prestige__loader{position:absolute;top:50%;left:50%;width:2em;height:2em;margin-left:-1em;margin-top:-1em;background:url(./img/loader.svg) no-repeat center center;-webkit-background-size:contain;-o-background-size:contain;background-size:contain}.online-prestige__head,.online-prestige__footer{display:-webkit-box;display:-webkit-flex;display:-moz-box;display:-ms-flexbox;display:flex;-webkit-box-pack:justify;-webkit-justify-content:space-between;-moz-box-pack:justify;-ms-flex-pack:justify;justify-content:space-between;-webkit-box-align:center;-webkit-align-items:center;-moz-box-align:center;-ms-flex-align:center;align-items:center}.online-prestige__timeline{margin:.8em 0}.online-prestige__timeline>.time-line{display:block !important}.online-prestige__title{font-size:1.7em;overflow:hidden;-o-text-overflow:ellipsis;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:1;line-clamp:1;-webkit-box-orient:vertical}@media screen and (max-width:480px){.online-prestige__title{font-size:1.4em}}.online-prestige__time{padding-left:2em}.online-prestige__info{display:-webkit-box;display:-webkit-flex;display:-moz-box;display:-ms-flexbox;display:flex;-webkit-box-align:center;-webkit-align-items:center;-moz-box-align:center;-ms-flex-align:center;align-items:center}.online-prestige__info>*{overflow:hidden;-o-text-overflow:ellipsis;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:1;line-clamp:1;-webkit-box-orient:vertical}.online-prestige__quality{padding-left:1em;white-space:nowrap}.online-prestige__scan-file{position:absolute;bottom:0;left:0;right:0}.online-prestige__scan-file .broadcast__scan{margin:0}.online-prestige .online-prestige-split{font-size:.8em;margin:0 1em;-webkit-flex-shrink:0;-ms-flex-negative:0;flex-shrink:0}.online-prestige.focus::after{content:'';position:absolute;top:-0.6em;left:-0.6em;right:-0.6em;bottom:-0.6em;-webkit-border-radius:.7em;border-radius:.7em;border:solid .3em #fff;z-index:-1;pointer-events:none}.online-prestige+.online-prestige{margin-top:1.5em}.online-prestige--folder .online-prestige__footer{margin-top:.8em}.online-prestige-watched{padding:1em}.online-prestige-watched__icon>svg{width:1.5em;height:1.5em}.online-prestige-watched__body{padding-left:1em;padding-top:.1em;display:-webkit-box;display:-webkit-flex;display:-moz-box;display:-ms-flexbox;display:flex;-webkit-flex-wrap:wrap;-ms-flex-wrap:wrap;flex-wrap:wrap}.online-prestige-watched__body>span+span::before{content:' ● ';vertical-align:top;display:inline-block;margin:0 .5em}.online-prestige-rate{display:-webkit-inline-box;display:-webkit-inline-flex;display:-moz-inline-box;display:-ms-inline-flexbox;display:inline-flex;-webkit-box-align:center;-webkit-align-items:center;-moz-box-align:center;-ms-flex-align:center;align-items:center}.online-prestige-rate>svg{width:1.3em !important;height:1.3em !important}.online-prestige-rate>span{font-weight:600;font-size:1.1em;padding-left:.7em}.online-empty{line-height:1.4}.online-empty__title{font-size:1.8em;margin-bottom:.3em}.online-empty__time{font-size:1.2em;font-weight:300;margin-bottom:1.6em}.online-empty__buttons{display:-webkit-box;display:-webkit-flex;display:-moz-box;display:-ms-flexbox;display:flex}.online-empty__buttons>*+*{margin-left:1em}.online-empty__button{background:rgba(0,0,0,0.3);font-size:1.2em;padding:.5em 1.2em;-webkit-border-radius:.2em;border-radius:.2em;margin-bottom:2.4em}.online-empty__button.focus{background:#fff;color:black}.online-empty__templates .online-empty-template:nth-child(2){opacity:.5}.online-empty__templates .online-empty-template:nth-child(3){opacity:.2}.online-empty-template{background-color:rgba(255,255,255,0.3);padding:1em;display:-webkit-box;display:-webkit-flex;display:-moz-box;display:-ms-flexbox;display:flex;-webkit-box-align:center;-webkit-align-items:center;-moz-box-align:center;-ms-flex-align:center;align-items:center;-webkit-border-radius:.3em;border-radius:.3em}.online-empty-template>*{background:rgba(0,0,0,0.3);-webkit-border-radius:.3em;border-radius:.3em}.online-empty-template__ico{width:4em;height:4em;margin-right:2.4em}.online-empty-template__body{height:1.7em;width:70%}.online-empty-template+.online-empty-template{margin-top:1em}\n        </style>\n    ");
-    $('body').append(Lampa.Template.get('lampac_css', {}, true));
+    
+    var themes_svg = '<!-- icon666.com - MILLIONS OF FREE VECTOR ICONS --><svg viewBox="0 0 512.00026 512" xmlns="http://www.w3.org/2000/svg"><path d="m491.238281 20.761719c-14.375-14.375-34.265625-21.890625-54.550781-20.625-20.289062 1.269531-39.078125 11.207031-51.550781 27.261719l-98.660157 127.007812-41.109374-41.109375c-12.015626-12.019531-27.996094-18.636719-44.988282-18.636719-16.996094 0-32.972656 6.617188-44.992187 18.636719l-142.363281 142.363281c-17.363282 17.363282-17.363282 45.617188 0 62.980469l180.335937 180.335937c8.679687 8.683594 20.085937 13.023438 31.488281 13.023438 11.40625 0 22.808594-4.339844 31.492188-13.023438l142.363281-142.363281c12.019531-12.019531 18.636719-27.996093 18.636719-44.992187 0-16.992188-6.617188-32.972656-18.636719-44.988282l-41.109375-41.109374 127.007812-98.660157c16.054688-12.472656 25.992188-31.261719 27.261719-51.550781 1.269531-20.292969-6.25-40.175781-20.625-54.550781zm-276.386719 456.722656-15.898437-15.898437 22.957031-22.957032c5.933594-5.9375 5.933594-15.558594 0-21.496094-5.933594-5.933593-15.558594-5.933593-21.492187 0l-22.957031 22.957032-10.152344-10.148438 44.210937-44.210937c5.9375-5.933594 5.9375-15.558594 0-21.492188-5.933593-5.9375-15.558593-5.9375-21.492187 0l-44.210938 44.210938-42.265625-42.265625 22.957031-22.957032c5.9375-5.9375 5.9375-15.558593 0-21.496093-5.933593-5.933594-15.558593-5.933594-21.492187 0l-22.957031 22.957031-10.152344-10.148438 44.210938-44.210937c5.9375-5.933594 5.9375-15.558594 0-21.492187-5.933594-5.9375-15.558594-5.9375-21.492188 0l-44.210938 44.210937-15.898437-15.898437c-5.511719-5.511719-5.511719-14.484376 0-19.996094l77.199219-77.195313 200.328125 200.328125-77.199219 77.199219c-5.511719 5.511719-14.480469 5.511719-19.992188 0zm118.6875-98.695313-200.328124-200.328124 18.175781-18.175782 200.328125 200.328125zm53.40625-67.167968c0 8.875-3.457031 17.222656-9.734374 23.496094l-4 4.003906-191.484376-191.480469-8.847656-8.847656 4.003906-4.003907c6.273438-6.277343 14.621094-9.730468 23.496094-9.730468s17.21875 3.453125 23.492188 9.730468l153.339844 153.335938c6.277343 6.277344 9.734374 14.621094 9.734374 23.496094zm94.578126-238.210938c-.726563 11.589844-6.398438 22.324219-15.570313 29.449219l-130.019531 101-27.796875-27.792969 101.003906-130.019531c7.125-9.171875 17.855469-14.847656 29.449219-15.570313 11.578125-.71875 22.945312 3.566407 31.15625 11.777344 8.210937 8.210938 12.503906 19.570313 11.777344 31.15625zm0 0" fill="#000000" style="fill: rgb(255, 255, 255);"></path><path d="m439.84375 56.953125c-7.949219 0-15.566406 6.992187-15.195312 15.199219.367187 8.234375 6.675781 15.199218 15.195312 15.199218 7.953125 0 15.566406-6.988281 15.199219-15.199218-.367188-8.234375-6.675781-15.199219-15.199219-15.199219zm0 0" fill="#000000" style="fill: rgb(255, 255, 255);"></path></svg>';
 
-    function resetTemplates() {
-      Lampa.Template.add('lampac_prestige_full', "<div class=\"online-prestige online-prestige--full selector\">\n            <div class=\"online-prestige__img\">\n                <img alt=\"\">\n                <div class=\"online-prestige__loader\"></div>\n            </div>\n            <div class=\"online-prestige__body\">\n                <div class=\"online-prestige__head\">\n                    <div class=\"online-prestige__title\">{title}</div>\n                    <div class=\"online-prestige__time\">{time}</div>\n                </div>\n\n                <div class=\"online-prestige__timeline\"></div>\n\n                <div class=\"online-prestige__footer\">\n                    <div class=\"online-prestige__info\">{info}</div>\n                    <div class=\"online-prestige__quality\">{quality}</div>\n                </div>\n            </div>\n        </div>");
-      Lampa.Template.add('lampac_content_loading', "<div class=\"online-empty\">\n            <div class=\"broadcast__scan\"><div></div></div>\n\t\t\t\n            <div class=\"online-empty__templates\">\n                <div class=\"online-empty-template selector\">\n                    <div class=\"online-empty-template__ico\"></div>\n                    <div class=\"online-empty-template__body\"></div>\n                </div>\n                <div class=\"online-empty-template\">\n                    <div class=\"online-empty-template__ico\"></div>\n                    <div class=\"online-empty-template__body\"></div>\n                </div>\n                <div class=\"online-empty-template\">\n                    <div class=\"online-empty-template__ico\"></div>\n                    <div class=\"online-empty-template__body\"></div>\n                </div>\n            </div>\n        </div>");
-      Lampa.Template.add('lampac_does_not_answer', "<div class=\"online-empty\">\n            <div class=\"online-empty__title\">\n                #{lampac_balanser_dont_work}\n            </div>\n            <div class=\"online-empty__time\">\n                #{lampac_balanser_timeout}\n            </div>\n            <div class=\"online-empty__buttons\">\n                <div class=\"online-empty__button selector cancel\">#{cancel}</div>\n                <div class=\"online-empty__button selector change\">#{lampac_change_balanser}</div>\n            </div>\n            <div class=\"online-empty__templates\">\n                <div class=\"online-empty-template\">\n                    <div class=\"online-empty-template__ico\"></div>\n                    <div class=\"online-empty-template__body\"></div>\n                </div>\n                <div class=\"online-empty-template\">\n                    <div class=\"online-empty-template__ico\"></div>\n                    <div class=\"online-empty-template__body\"></div>\n                </div>\n                <div class=\"online-empty-template\">\n                    <div class=\"online-empty-template__ico\"></div>\n                    <div class=\"online-empty-template__body\"></div>\n                </div>\n            </div>\n        </div>");
-      Lampa.Template.add('lampac_prestige_rate', "<div class=\"online-prestige-rate\">\n            <svg width=\"17\" height=\"16\" viewBox=\"0 0 17 16\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n                <path d=\"M8.39409 0.192139L10.99 5.30994L16.7882 6.20387L12.5475 10.4277L13.5819 15.9311L8.39409 13.2425L3.20626 15.9311L4.24065 10.4277L0 6.20387L5.79819 5.30994L8.39409 0.192139Z\" fill=\"#fff\"></path>\n            </svg>\n            <span>{rate}</span>\n        </div>");
-      Lampa.Template.add('lampac_prestige_folder', "<div class=\"online-prestige online-prestige--folder selector\">\n            <div class=\"online-prestige__folder\">\n                <svg viewBox=\"0 0 128 112\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n                    <rect y=\"20\" width=\"128\" height=\"92\" rx=\"13\" fill=\"white\"></rect>\n                    <path d=\"M29.9963 8H98.0037C96.0446 3.3021 91.4079 0 86 0H42C36.5921 0 31.9555 3.3021 29.9963 8Z\" fill=\"white\" fill-opacity=\"0.23\"></path>\n                    <rect x=\"11\" y=\"8\" width=\"106\" height=\"76\" rx=\"13\" fill=\"white\" fill-opacity=\"0.51\"></rect>\n                </svg>\n            </div>\n            <div class=\"online-prestige__body\">\n                <div class=\"online-prestige__head\">\n                    <div class=\"online-prestige__title\">{title}</div>\n                    <div class=\"online-prestige__time\">{time}</div>\n                </div>\n\n                <div class=\"online-prestige__footer\">\n                    <div class=\"online-prestige__info\">{info}</div>\n                </div>\n            </div>\n        </div>");
-      Lampa.Template.add('lampac_prestige_watched', "<div class=\"online-prestige online-prestige-watched selector\">\n            <div class=\"online-prestige-watched__icon\">\n                <svg width=\"21\" height=\"21\" viewBox=\"0 0 21 21\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n                    <circle cx=\"10.5\" cy=\"10.5\" r=\"9\" stroke=\"currentColor\" stroke-width=\"3\"/>\n                    <path d=\"M14.8477 10.5628L8.20312 14.399L8.20313 6.72656L14.8477 10.5628Z\" fill=\"currentColor\"/>\n                </svg>\n            </div>\n            <div class=\"online-prestige-watched__body\">\n                \n            </div>\n        </div>");
+    // Основной объект плагина
+    var maxsm_themes = {
+        // Название плагина
+        name: 'maxsm_themes',
+        // Версия плагина
+        version: '2.6.1',
+        // Настройки по умолчанию
+        settings: {
+            theme: 'mint_dark'
+        }
+    };
+
+    // Была ли предыдущая тема стоковая
+    var prevtheme = '';
+    // Запускаем только один раз
+    var onetime = false;
+
+    // Цвета loader'а для каждой темы
+    var loaderColors = {
+        "default": '#fff',
+        violet_blue: '#6a11cb',
+        mint_dark: '#3da18d',
+        deep_aurora: '#7e7ed9',
+        crystal_cyan: '#7ed0f9',
+        amber_noir: '#f4a261',
+        velvet_sakura: '#f6a5b0'
+    };
+
+    // Функция для применения тем
+    function applyTheme(theme) {
+        // Удаляем предыдущие стили темы
+        $('#maxsm_themes_theme').remove();
+
+        if (
+            prevtheme !== '' &&
+            (
+                (prevtheme === 'default' && theme !== 'default') ||
+                (prevtheme !== 'default' && theme === 'default')
+            )
+        ) {
+            window.location.reload();
+        }
+
+        prevtheme = theme;
+
+        // Если выбрано "Нет", просто удаляем стили
+        if (theme === 'default') {
+            removeAdditionalSettings();
+            return;
+        }
+
+        var color = loaderColors[theme] || loaderColors["default"];
+
+        var svgCode = encodeURIComponent("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"135\" height=\"140\" fill=\"".concat(color, "\"><rect width=\"10\" height=\"40\" y=\"100\" rx=\"6\"><animate attributeName=\"height\" begin=\"0s\" calcMode=\"linear\" dur=\"1s\" repeatCount=\"indefinite\" values=\"40;100;40\" keyTimes=\"0;0.5;1\"/><animate attributeName=\"y\" begin=\"0s\" calcMode=\"linear\" dur=\"1s\" repeatCount=\"indefinite\" values=\"100;40;100\" keyTimes=\"0;0.5;1\"/></rect><rect width=\"10\" height=\"40\" x=\"20\" y=\"100\" rx=\"6\"><animate attributeName=\"height\" begin=\"0.2s\" calcMode=\"linear\" dur=\"1s\" repeatCount=\"indefinite\" values=\"40;100;40\" keyTimes=\"0;0.5;1\"/><animate attributeName=\"y\" begin=\"0.2s\" calcMode=\"linear\" dur=\"1s\" repeatCount=\"indefinite\" values=\"100;40;100\" keyTimes=\"0;0.5;1\"/></rect><rect width=\"10\" height=\"40\" x=\"40\" y=\"100\" rx=\"6\"><animate attributeName=\"height\" begin=\"0.4s\" calcMode=\"linear\" dur=\"1s\" repeatCount=\"indefinite\" values=\"40;100;40\" keyTimes=\"0;0.5;1\"/><animate attributeName=\"y\" begin=\"0.4s\" calcMode=\"linear\" dur=\"1s\" repeatCount=\"indefinite\" values=\"100;40;100\" keyTimes=\"0;0.5;1\"/></rect><rect width=\"10\" height=\"40\" x=\"60\" y=\"100\" rx=\"6\"><animate attributeName=\"height\" begin=\"0.6s\" calcMode=\"linear\" dur=\"1s\" repeatCount=\"indefinite\" values=\"40;100;40\" keyTimes=\"0;0.5;1\"/><animate attributeName=\"y\" begin=\"0.6s\" calcMode=\"linear\" dur=\"1s\" repeatCount=\"indefinite\" values=\"100;40;100\" keyTimes=\"0;0.5;1\"/></rect><rect width=\"10\" height=\"40\" x=\"80\" y=\"100\" rx=\"6\"><animate attributeName=\"height\" begin=\"0.8s\" calcMode=\"linear\" dur=\"1s\" repeatCount=\"indefinite\" values=\"40;100;40\" keyTimes=\"0;0.5;1\"/><animate attributeName=\"y\" begin=\"0.8s\" calcMode=\"linear\" dur=\"1s\" repeatCount=\"indefinite\" values=\"100;40;100\" keyTimes=\"0;0.5;1\"/></rect><rect width=\"10\" height=\"40\" x=\"100\" y=\"100\" rx=\"6\"><animate attributeName=\"height\" begin=\"1s\" calcMode=\"linear\" dur=\"1s\" repeatCount=\"indefinite\" values=\"40;100;40\" keyTimes=\"0;0.5;1\"/><animate attributeName=\"y\" begin=\"1s\" calcMode=\"linear\" dur=\"1s\" repeatCount=\"indefinite\" values=\"100;40;100\" keyTimes=\"0;0.5;1\"/></rect><rect width=\"10\" height=\"40\" x=\"120\" y=\"100\" rx=\"6\"><animate attributeName=\"height\" begin=\"1.2s\" calcMode=\"linear\" dur=\"1s\" repeatCount=\"indefinite\" values=\"40;100;40\" keyTimes=\"0;0.5;1\"/><animate attributeName=\"y\" begin=\"1.2s\" calcMode=\"linear\" dur=\"1s\" repeatCount=\"indefinite\" values=\"100;40;100\" keyTimes=\"0;0.5;1\"/></rect></svg>"));
+
+
+        // Создаем новый стиль
+        var style = $('<style id="maxsm_themes_theme"></style>');
+
+        // Определяем стили для разных тем
+        var themes = {
+            mint_dark: "\n.navigation-bar__body\n{background: rgba(18, 32, 36, 0.96);\n}\n.card__quality,\n .card__type::after  {\nbackground: linear-gradient(to right, #1e6262dd, #3da18ddd);\n}\n.screensaver__preload {\nbackground:url(\"data:image/svg+xml,".concat(svgCode, "\") no-repeat 50% 50%\n}\n.activity__loader {\nposition:absolute;\ntop:0;\nleft:0;\nwidth:100%;\nheight:100%;\ndisplay:none;\nbackground:url(\"data:image/svg+xml,").concat(svgCode, "\") no-repeat 50% 50%\n \n}\nhtml, body, .extensions\n {\nbackground: linear-gradient(135deg, #0a1b2a, #1a4036);\ncolor: #ffffff;\n}\n.company-start.icon--broken .company-start__icon,\n.explorer-card__head-img > img,\n.bookmarks-folder__layer,\n.card-more__box,\n.card__img\n,.extensions__block-add\n,.extensions__item\n {\nbackground-color: #1e2c2f;\n}\n.search-source.focus,\n.simple-button.focus,\n.menu__item.focus,\n.menu__item.traverse,\n.menu__item.hover,\n.full-start__button.focus,\n.full-descr__tag.focus,\n.player-panel .button.focus,\n.full-person.selector.focus,\n.tag-count.selector.focus,\n.full-review.focus {\nbackground: linear-gradient(to right, #1e6262, #3da18d);\ncolor: #fff;\nbox-shadow: 0 0.0em 0.4em rgba(61, 161, 141, 0.0);\n}\n.selectbox-item.focus,\n.settings-folder.focus,\n.settings-param.focus {\nbackground: linear-gradient(to right, #1e6262, #3da18d);\ncolor: #fff;\nbox-shadow: 0 0.0em 0.4em rgba(61, 161, 141, 0.0);\nborder-radius: 0.5em 0 0 0.5em;\n}\n.full-episode.focus::after,\n.card-episode.focus .full-episode::after,\n.items-cards .selector.focus::after,  \n.card-more.focus .card-more__box::after,\n.card-episode.focus .full-episode::after,\n.card-episode.hover .full-episode::after,\n.card.focus .card__view::after,\n.card.hover .card__view::after,\n.torrent-item.focus::after,\n.online-prestige.selector.focus::after,\n.online-prestige--full.selector.focus::after,\n.explorer-card__head-img.selector.focus::after,\n.extensions__item.focus::after,\n.extensions__block-add.focus::after,\n.full-review-add.focus::after {\nborder: 0.2em solid #3da18d;\nbox-shadow: 0 0 0.8em rgba(61, 161, 141, 0.0);\n}\n.head__action.focus,\n.head__action.hover {\nbackground: linear-gradient(45deg, #3da18d, #1e6262);\n}\n.modal__content {\nbackground: rgba(18, 32, 36, 0.96);\nborder: 0em solid rgba(18, 32, 36, 0.96);\n}\n.settings__content,\n.settings-input__content,\n.selectbox__content,\n.settings-input {\nbackground: rgba(18, 32, 36, 0.96);\n}\n.torrent-serial {\nbackground: rgba(0, 0, 0, 0.22);\nborder: 0.2em solid rgba(0, 0, 0, 0.22);\n}\n.torrent-serial.focus {\nbackground-color: #1a3b36cc;\nborder: 0.2em solid #3da18d;\n}\n"),
+            crystal_cyan: "\n.navigation-bar__body\n{background: rgba(10, 25, 40, 0.96);\n}\n.card__quality,\n .card__type::after  {\nbackground: linear-gradient(to right, #00d2ffdd, #3a8ee6dd);\n}\n.screensaver__preload {\nbackground:url(\"data:image/svg+xml,".concat(svgCode, "\") no-repeat 50% 50%\n}\n.activity__loader {\nposition:absolute;\ntop:0;\nleft:0;\nwidth:100%;\nheight:100%;\ndisplay:none;\nbackground:url(\"data:image/svg+xml,").concat(svgCode, "\") no-repeat 50% 50%\n \n}\nhtml, body, .extensions\n {\nbackground: linear-gradient(135deg, #081822, #104059);\ncolor: #ffffff;\n}\n.company-start.icon--broken .company-start__icon,\n.explorer-card__head-img > img,\n.bookmarks-folder__layer,\n.card-more__box,\n.card__img\n,.extensions__block-add\n,.extensions__item\n {\nbackground-color: #112b3a;\n}\n.search-source.focus,\n.simple-button.focus,\n.menu__item.focus,\n.menu__item.traverse,\n.menu__item.hover,\n.full-start__button.focus,\n.full-descr__tag.focus,\n.player-panel .button.focus,\n.full-person.selector.focus,\n.tag-count.selector.focus,\n.full-review.focus {\nbackground: linear-gradient(to right, #00d2ff, #3a8ee6);\ncolor: #fff;\nbox-shadow: 0 0.0em 0.4em rgba(72, 216, 255, 0.0);\n}\n.selectbox-item.focus,\n.settings-folder.focus,\n.settings-param.focus {\nbackground: linear-gradient(to right, #00d2ff, #3a8ee6);\ncolor: #fff;\nbox-shadow: 0 0.0em 0.4em rgba(72, 216, 255, 0.0);\nborder-radius: 0.5em 0 0 0.5em;\n}\n.full-episode.focus::after,\n.card-episode.focus .full-episode::after,\n.items-cards .selector.focus::after,  \n.card-more.focus .card-more__box::after,\n.card-episode.focus .full-episode::after,\n.card-episode.hover .full-episode::after,\n.card.focus .card__view::after,\n.card.hover .card__view::after,\n.torrent-item.focus::after,\n.online-prestige.selector.focus::after,\n.online-prestige--full.selector.focus::after,\n.explorer-card__head-img.selector.focus::after,\n.extensions__item.focus::after,\n.extensions__block-add.focus::after,\n.full-review-add.focus::after {\nborder: 0.2em solid #00d2ff;\nbox-shadow: 0 0 0.8em rgba(72, 216, 255, 0.0);\n}\n.head__action.focus,\n.head__action.hover {\nbackground: linear-gradient(45deg, #00d2ff, #3a8ee6);\n}\n.modal__content {\nbackground: rgba(10, 25, 40, 0.96);\nborder: 0em solid rgba(10, 25, 40, 0.96);\n}\n.settings__content,\n.settings-input__content,\n.selectbox__content,\n.settings-input {\nbackground: rgba(10, 25, 40, 0.96);\n}\n.torrent-serial {\nbackground: rgba(0, 0, 0, 0.22);\nborder: 0.2em solid rgba(0, 0, 0, 0.22);\n}\n.torrent-serial.focus {\nbackground-color: #0c2e45cc;\nborder: 0.2em solid #00d2ff;\n}\n"),
+            deep_aurora: "\n.navigation-bar__body\n{background: rgba(18, 34, 59, 0.96);\n}\n.card__quality,\n .card__type::after  {\nbackground: linear-gradient(to right, #2c6fc1dd, #7e7ed9dd);\n}\n.screensaver__preload {\nbackground:url(\"data:image/svg+xml,".concat(svgCode, "\") no-repeat 50% 50%\n}\n.activity__loader {\nposition:absolute;\ntop:0;\nleft:0;\nwidth:100%;\nheight:100%;\ndisplay:none;\nbackground:url(\"data:image/svg+xml,").concat(svgCode, "\") no-repeat 50% 50%\n \n}\nhtml, body, .extensions\n {\nbackground: linear-gradient(135deg, #1a102b, #0a1c3f);\ncolor: #ffffff;\n}\n.company-start.icon--broken .company-start__icon,\n.explorer-card__head-img > img,\n.bookmarks-folder__layer,\n.card-more__box,\n.card__img\n,.extensions__block-add\n,.extensions__item\n {\nbackground-color: #171f3a;\n}\n.search-source.focus,\n.simple-button.focus,\n.menu__item.focus,\n.menu__item.traverse,\n.menu__item.hover,\n.full-start__button.focus,\n.full-descr__tag.focus,\n.player-panel .button.focus,\n.full-person.selector.focus,\n.tag-count.selector.focus,\n.full-review.focus {\nbackground: linear-gradient(to right, #2c6fc1, #7e7ed9);\ncolor: #fff;\nbox-shadow: 0 0.0em 0.4em rgba(124, 194, 255, 0.0);\n}\n.selectbox-item.focus,\n.settings-folder.focus,\n.settings-param.focus {\nbackground: linear-gradient(to right, #2c6fc1, #7e7ed9);\ncolor: #fff;\nbox-shadow: 0 0.0em 0.4em rgba(124, 194, 255, 0.0);\nborder-radius: 0.5em 0 0 0.5em;\n}\n.full-episode.focus::after,\n.card-episode.focus .full-episode::after,\n.items-cards .selector.focus::after,  \n.card-more.focus .card-more__box::after,\n.card-episode.focus .full-episode::after,\n.card-episode.hover .full-episode::after,\n.card.focus .card__view::after,\n.card.hover .card__view::after,\n.torrent-item.focus::after,\n.online-prestige.selector.focus::after,\n.online-prestige--full.selector.focus::after,\n.explorer-card__head-img.selector.focus::after,\n.extensions__item.focus::after,\n.extensions__block-add.focus::after,\n.full-review-add.focus::after {\nborder: 0.2em solid #7e7ed9;\nbox-shadow: 0 0 0.8em rgba(124, 194, 255, 0.0);\n}\n.head__action.focus,\n.head__action.hover {\nbackground: linear-gradient(45deg, #7e7ed9, #2c6fc1);\n}\n.modal__content {\nbackground: rgba(18, 34, 59, 0.96);\nborder: 0em solid rgba(18, 34, 59, 0.96);\n}\n.settings__content,\n.settings-input__content,\n.selectbox__content,\n.settings-input {\nbackground: rgba(18, 34, 59, 0.96);\n}\n.torrent-serial {\nbackground: rgba(0, 0, 0, 0.22);\nborder: 0.2em solid rgba(0, 0, 0, 0.22);\n}\n.torrent-serial.focus {\nbackground-color: #1a102bcc;\nborder: 0.2em solid #7e7ed9;\n}\n"),
+            amber_noir: "\n.navigation-bar__body\n{background: rgba(28, 18, 10, 0.96);\n}\n.card__quality,\n .card__type::after {\nbackground: linear-gradient(to right, #f4a261dd, #e76f51dd);\n}\n.screensaver__preload {\nbackground:url(\"data:image/svg+xml,".concat(svgCode, "\") no-repeat 50% 50%\n}\n.activity__loader {\nposition:absolute;\ntop:0;\nleft:0;\nwidth:100%;\nheight:100%;\ndisplay:none;\nbackground:url(\"data:image/svg+xml,").concat(svgCode, "\") no-repeat 50% 50%\n \n}\nhtml, body, .extensions\n {\nbackground: linear-gradient(135deg, #1f0e04, #3b2a1e);\ncolor: #ffffff;\n}\n.company-start.icon--broken .company-start__icon,\n.explorer-card__head-img > img,\n.bookmarks-folder__layer,\n.card-more__box,\n.card__img\n,.extensions__block-add\n,.extensions__item\n {\nbackground-color: #2a1c11;\n}\n.search-source.focus,\n.simple-button.focus,\n.menu__item.focus,\n.menu__item.traverse,\n.menu__item.hover,\n.full-start__button.focus,\n.full-descr__tag.focus,\n.player-panel .button.focus,\n.full-person.selector.focus,\n.tag-count.selector.focus,\n.full-review.focus {\nbackground: linear-gradient(to right, #f4a261, #e76f51);\ncolor: #fff;\nbox-shadow: 0 0.0em 0.4em rgba(255, 160, 90, 0.0);\n}\n.selectbox-item.focus,\n.settings-folder.focus,\n.settings-param.focus {\nbackground: linear-gradient(to right, #f4a261, #e76f51);\ncolor: #fff;\nbox-shadow: 0 0.0em 0.4em rgba(255, 160, 90, 0.0);\nborder-radius: 0.5em 0 0 0.5em;\n}\n.full-episode.focus::after,\n.card-episode.focus .full-episode::after,\n.items-cards .selector.focus::after,  \n.card-more.focus .card-more__box::after,\n.card-episode.focus .full-episode::after,\n.card-episode.hover .full-episode::after,\n.card.focus .card__view::after,\n.card.hover .card__view::after,\n.torrent-item.focus::after,\n.online-prestige.selector.focus::after,\n.online-prestige--full.selector.focus::after,\n.explorer-card__head-img.selector.focus::after,\n.extensions__item.focus::after,\n.extensions__block-add.focus::after,\n.full-review-add.focus::after {\nborder: 0.2em solid #f4a261;\nbox-shadow: 0 0 0.8em rgba(255, 160, 90, 0.0);\n}\n.head__action.focus,\n.head__action.hover {\nbackground: linear-gradient(45deg, #f4a261, #e76f51);\n}\n.modal__content {\nbackground: rgba(28, 18, 10, 0.96);\nborder: 0em solid rgba(28, 18, 10, 0.96);\n}\n.settings__content,\n.settings-input__content,\n.selectbox__content,\n.settings-input {\nbackground: rgba(28, 18, 10, 0.96);\n}\n.torrent-serial {\nbackground: rgba(0, 0, 0, 0.22);\nborder: 0.2em solid rgba(0, 0, 0, 0.22);\n}\n.torrent-serial.focus {\nbackground-color: #3b2412cc;\nborder: 0.2em solid #f4a261;\n}\n"),
+            velvet_sakura: "\n.navigation-bar__body\n{background: rgba(56, 32, 45, 0.96);\n}\n.card__quality,\n .card__type::after  {\nbackground: linear-gradient(to right, #f6a5b0dd, #f9b8d3dd);\n}\n.screensaver__preload {\nbackground:url(\"data:image/svg+xml,".concat(svgCode, "\") no-repeat 50% 50%\n}\n.activity__loader {\nposition:absolute;\ntop:0;\nleft:0;\nwidth:100%;\nheight:100%;\ndisplay:none;\nbackground:url(\"data:image/svg+xml,").concat(svgCode, "\") no-repeat 50% 50%\n \n}\nhtml, body, .extensions\n {\nbackground: linear-gradient(135deg, #4b0e2b, #7c2a57);\ncolor: #ffffff;\n}\n.company-start.icon--broken .company-start__icon,\n.explorer-card__head-img > img,\n.bookmarks-folder__layer,\n.card-more__box,\n.card__img\n,.extensions__block-add\n,.extensions__item\n {\nbackground-color: #5c0f3f;\n}\n.search-source.focus,\n.simple-button.focus,\n.menu__item.focus,\n.menu__item.traverse,\n.menu__item.hover,\n.full-start__button.focus,\n.full-descr__tag.focus,\n.player-panel .button.focus,\n.full-person.selector.focus,\n.tag-count.selector.focus,\n.full-review.focus {\nbackground: linear-gradient(to right, #f6a5b0, #f9b8d3);\ncolor: #fff;\nbox-shadow: 0 0.0em 0.4em rgba(246, 165, 176, 0.0);\n}\n.selectbox-item.focus,\n.settings-folder.focus,\n.settings-param.focus {\nbackground: linear-gradient(to right, #f6a5b0, #f9b8d3);\ncolor: #fff;\nbox-shadow: 0 0.0em 0.4em rgba(246, 165, 176, 0.0);\nborder-radius: 0.5em 0 0 0.5em;\n}\n.full-episode.focus::after,\n.card-episode.focus .full-episode::after,\n.items-cards .selector.focus::after,  \n.card-more.focus .card-more__box::after,\n.card-episode.focus .full-episode::after,\n.card-episode.hover .full-episode::after,\n.card.focus .card__view::after,\n.card.hover .card__view::after,\n.torrent-item.focus::after,\n.online-prestige.selector.focus::after,\n.online-prestige--full.selector.focus::after,\n.explorer-card__head-img.selector.focus::after,\n.extensions__item.focus::after,\n.extensions__block-add.focus::after,\n.full-review-add.focus::after {\nborder: 0.2em solid #f6a5b0;\nbox-shadow: 0 0 0.8em rgba(246, 165, 176, 0.0);\n}\n.head__action.focus,\n.head__action.hover {\nbackground: linear-gradient(45deg, #f9b8d3, #f6a5b0);\n}\n.modal__content {\nbackground: rgba(56, 32, 45, 0.96);\nborder: 0em solid rgba(56, 32, 45, 0.96);\n}\n.settings__content,\n.settings-input__content,\n.selectbox__content,\n.settings-input {\nbackground: rgba(56, 32, 45, 0.96);\n}\n.torrent-serial {\nbackground: rgba(0, 0, 0, 0.22);\nborder: 0.2em solid rgba(0, 0, 0, 0.22);\n}\n.torrent-serial.focus {\nbackground-color: #7c2a57cc;\nborder: 0.2em solid #f6a5b0;\n}\n")
+        };
+
+        // Устанавливаем стили для выбранной темы
+        style.html(themes[theme] || '');
+
+        // Добавляем стиль в head
+        $('head').append(style);
+        
+        animations();
+        translate_tv();
+        bigbuttons();
+
+        if (onetime === false) {
+            onetime = true;
+            forall();
+            removeFromSettingsMenu();
+            fix_lang();
+            incardtemplate();
+        }
     }
-    var button = "<div class=\"full-start__button selector view--online lampac--button\" data-subtitle=\"".concat(manifst.name, " v").concat(manifst.version, "\">\n        <svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" viewBox=\"0 0 392.697 392.697\" xml:space=\"preserve\">\n            <path d=\"M21.837,83.419l36.496,16.678L227.72,19.886c1.229-0.592,2.002-1.846,1.98-3.209c-0.021-1.365-0.834-2.592-2.082-3.145\n                L197.766,0.3c-0.903-0.4-1.933-0.4-2.837,0L21.873,77.036c-1.259,0.559-2.073,1.803-2.081,3.18\n                C19.784,81.593,20.584,82.847,21.837,83.419z\" fill=\"currentColor\"></path>\n            <path d=\"M185.689,177.261l-64.988-30.01v91.617c0,0.856-0.44,1.655-1.167,2.114c-0.406,0.257-0.869,0.386-1.333,0.386\n                c-0.368,0-0.736-0.082-1.079-0.244l-68.874-32.625c-0.869-0.416-1.421-1.293-1.421-2.256v-92.229L6.804,95.5\n                c-1.083-0.496-2.344-0.406-3.347,0.238c-1.002,0.645-1.608,1.754-1.608,2.944v208.744c0,1.371,0.799,2.615,2.045,3.185\n                l178.886,81.768c0.464,0.211,0.96,0.315,1.455,0.315c0.661,0,1.318-0.188,1.892-0.555c1.002-0.645,1.608-1.754,1.608-2.945\n                V180.445C187.735,179.076,186.936,177.831,185.689,177.261z\" fill=\"currentColor\"></path>\n            <path d=\"M389.24,95.74c-1.002-0.644-2.264-0.732-3.347-0.238l-178.876,81.76c-1.246,0.57-2.045,1.814-2.045,3.185v208.751\n                c0,1.191,0.606,2.302,1.608,2.945c0.572,0.367,1.23,0.555,1.892,0.555c0.495,0,0.991-0.104,1.455-0.315l178.876-81.768\n                c1.246-0.568,2.045-1.813,2.045-3.185V98.685C390.849,97.494,390.242,96.384,389.24,95.74z\" fill=\"currentColor\"></path>\n            <path d=\"M372.915,80.216c-0.009-1.377-0.823-2.621-2.082-3.18l-60.182-26.681c-0.938-0.418-2.013-0.399-2.938,0.045\n                l-173.755,82.992l60.933,29.117c0.462,0.211,0.958,0.316,1.455,0.316s0.993-0.105,1.455-0.316l173.066-79.092\n                C372.122,82.847,372.923,81.593,372.915,80.216z\" fill=\"currentColor\"></path>\n        </svg>\n\n        <span>#{title_online}</span>\n    </div>"); // нужна заглушка, а то при страте лампы говорит пусто
-    Lampa.Component.add('lampac', component); //то же самое
-    resetTemplates();
-
-    function addButton(e) {
-      if (e.render.find('.lampac--button').length) return;
-      var btn = $(Lampa.Lang.translate(button));
-	  // //console.log(btn.clone().removeClass('focus').prop('outerHTML'))
-      btn.on('hover:enter', function() {
-        resetTemplates();
-        Lampa.Component.add('lampac', component);
-		
-		var id = Lampa.Utils.hash(e.movie.number_of_seasons ? e.movie.original_name : e.movie.original_title);
-		var all = Lampa.Storage.get('clarification_search','{}');
-		
-        Lampa.Activity.push({
-          url: '',
-          title: Lampa.Lang.translate('title_online'),
-          component: 'lampac',
-          search: all[id] ? all[id] : e.movie.title,
-          search_one: e.movie.title,
-          search_two: e.movie.original_title,
-          movie: e.movie,
-          page: 1,
-		  clarification: all[id] ? true : false
-        });
+    
+    function fix_lang() {
+       Lampa.Lang.add({
+        tv_status_returning_series: {
+          ru: "Идет"
+        },
+        tv_status_planned: {
+          ru: "Запланирован"
+        },
+        tv_status_in_production: {
+          ru: "В производстве"
+        },
+        tv_status_ended: {
+          ru: "Завершен"
+        },
+        tv_status_canceled: {
+          ru: "Отменен"
+        },
+        tv_status_pilot: {
+          ru: "Пилот"
+        },
+        tv_status_released: {
+          ru: "Вышел"
+        },
+        tv_status_rumored: {
+          ru: "По слухам"
+        },
+        tv_status_post_production: {
+          ru: "Скоро"
+        }
       });
-      e.render.after(btn);
     }
-    Lampa.Listener.follow('full', function(e) {
-      if (e.type == 'complite') {
-        addButton({
-          render: e.object.activity.render().find('.view--torrent'),
-          movie: e.data.movie
-        });
-      }
-    });
-    try {
-      if (Lampa.Activity.active().component == 'full') {
-        addButton({
-          render: Lampa.Activity.active().activity.render().find('.view--torrent'),
-          movie: Lampa.Activity.active().card
-        });
-      }
-    } catch (e) {}
-    if (Lampa.Manifest.app_digital >= 177) {
-      var balansers_sync = ["filmix", 'filmixtv', "fxapi", "rezka", "rhsprem", "lumex", "videodb", "collaps", "collaps-dash", "hdvb", "zetflix", "kodik", "ashdi", "kinoukr", "kinotochka", "remux", "iframevideo", "cdnmovies", "anilibria", "animedia", "animego", "animevost", "animebesst", "redheadsound", "alloha", "animelib", "moonanime", "kinopub", "vibix", "vdbmovies", "fancdn", "cdnvideohub", "vokino", "rc/filmix", "rc/fxapi", "rc/rhs", "vcdn", "videocdn", "mirage", "hydraflix","videasy","vidsrc","movpi","vidlink","twoembed","autoembed","smashystream","autoembed","rgshows", "pidtor", "videoseed", "iptvonline", "veoveo"];
-      balansers_sync.forEach(function(name) {
-        Lampa.Storage.sync('online_choice_' + name, 'object_object');
-      });
-      Lampa.Storage.sync('online_watched_last', 'object_object');
+    
+    function removeAdditionalSettings() {
+        Lampa.Settings.listener.follow('open', function(e) {
+            if (e.name == 'maxsm_themes') {
+                e.body.find('[data-name="maxsm_themes_animations"]').remove();
+                e.body.find('[data-name="maxsm_themes_translate_tv"]').remove();
+                e.body.find('[data-name="maxsm_themes_incardtemplate"]').remove();
+                e.body.find('[data-name="maxsm_themes_bigbuttons"]').remove();
+            }
+        });        
     }
-  }
-  if (!window.lampac_plugin) startPlugin();
+    
+    function removeFromSettingsMenu() {
+        // Скрываем всё, что плохо сочетается с плагином тем
+        Lampa.Settings.listener.follow('open', function(e) {
+            if (e.name == 'interface') {
+                e.body.find('[data-name="light_version"]').remove();
+                e.body.find('[data-name="background"]').remove();
+                e.body.find('[data-name="background_type"]').remove();
+                e.body.find('[data-name="card_interfice_type"]').remove();
+                e.body.find('[data-name="glass_style"]').prev('.settings-param-title').remove();
+                e.body.find('[data-name="glass_style"]').remove();
+                e.body.find('[data-name="glass_opacity"]').remove();
+                e.body.find('[data-name="card_interfice_poster"]').prev('.settings-param-title').remove();
+                e.body.find('[data-name="card_interfice_poster"]').remove();
+                e.body.find('[data-name="card_interfice_cover"]').remove();
+                e.body.find('[data-name="advanced_animation"]').remove();
+            }
+        });
+        // Настройки интерфейса под темы
+        Lampa.Storage.set('light_version', 'false');
+        Lampa.Storage.set('background', 'false');
+        Lampa.Storage.set('card_interfice_type', 'new');
+        Lampa.Storage.set('glass_style', 'false');
+        Lampa.Storage.set('card_interfice_poster', 'false');
+        Lampa.Storage.set('card_interfice_cover', 'true');
+        Lampa.Storage.set('advanced_animation', 'false');
 
+    }
+
+    // Дополнительные Шаблоны, не меняющиеся от цветовых стилей    
+    function forall() {
+        // Шаблон карточки, где год перенесен выше названия
+        Lampa.Template.add('card', "<div class=\"card selector layer--visible layer--render\">\n    <div class=\"card__view\">\n        <img src=\"./img/img_load.svg\" class=\"card__img\" />\n\n        <div class=\"card__icons\">\n            <div class=\"card__icons-inner\">\n                \n            </div>\n        </div>\n    <div class=\"card__age\">{release_year}</div>\n    </div>\n\n    <div class=\"card__title\">{title}</div>\n    </div>");
+        // Шаблон карточки выхода эпизода, выкинем футер из card_episode, год и название на карточку
+        Lampa.Template.add('card_episode', "<div class=\"card-episode selector layer--visible layer--render\">\n    <div class=\"card-episode__body\">\n        <div class=\"full-episode\">\n            <div class=\"full-episode__img\">\n                <img />\n            </div>\n\n            <div class=\"full-episode__body\">\n     <div class=\"card__title\">{title}</div>\n            <div class=\"card__age\">{release_year}</div>\n            <div class=\"full-episode__num hide\">{num}</div>\n                <div class=\"full-episode__name\">{name}</div>\n                <div class=\"full-episode__date\">{date}</div>\n            </div>\n        </div>\n    </div>\n    <div class=\"card-episode__footer hide\">\n        <div class=\"card__imgbox\">\n            <div class=\"card__view\">\n                <img class=\"card__img\" />\n            </div>\n        </div>\n\n        <div class=\"card__left\">\n            <div class=\"card__title\">{title}</div>\n            <div class=\"card__age\">{release_year}</div>\n        </div>\n    </div>\n</div>");
+        // Стили 
+        var forall_style = "\n<style id=\"maxsm_themes_forall\">\n " +
+            // По центру в мобилке
+            "@media screen and (max-width: 480px) { .full-start-new__head, .full-start-new__title, .full-start__title-original, .full-start__rate, .full-start-new__reactions, .full-start-new__rate-line, .full-start-new__buttons, .full-start-new__details, .full-start-new__tagline { -webkit-justify-content: center; justify-content: center; text-align: center; }\n" +
+            ".full-start__title-original {\n   max-width: 100%;\n}\n}" +
+            "@media screen and (max-width: 480px) { .full-start-new__right { background: -webkit-gradient(linear, left top, left bottom, from(rgba(0, 0, 0, 0)), to(rgba(0, 0, 0, 0))); background: -webkit-linear-gradient(top, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0) 100%); background: -o-linear-gradient(top, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0) 100%); background: linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0) 100%);}}" +
+            // Круглые чек-боксы
+            ".selectbox-item__checkbox\n {\nborder-radius: 100%\n}\n" +
+            ".selectbox-item--checked .selectbox-item__checkbox\n {\nbackground: #ccc;\n}\n" +
+            //  Рейтинги внутри карточки
+            ".full-start-new__rate-line .full-start__pg {\n    font-size: 1em;\nbackground: #fff;\n    color: #000;\n}\n." +
+            ".full-start__rate \n{\n     border-radius: 0.25em;\n padding: 0.3em;\n background-color: rgba(0, 0, 0, 0.3);\n}\n" +
+
+            // Докручиваем плашки на карточках стилями 
+              // Заголовок
+            ".card__title {\n                    height: 3.6em;\n                    text-overflow: ellipsis;\n                     -o-text-overflow: ellipsis;\n                    text-overflow: ellipsis;\n                    -webkit-line-clamp: 3;\n                    line-clamp: 3;\n                }\n " +
+              // Год
+            ".card__age {\n  position: absolute;\n  right: 0em;\n  bottom: 0em;\n  z-index: 10;\n  background: rgba(0, 0, 0, 0.6);\n  color: #ffffff;\n  font-weight: 700;\n  padding: 0.4em 0.6em;\n    -webkit-border-radius: 0.48em 0 0.48em 0;\n     -moz-border-radius: 0.48em 0 0.48em 0;\n          border-radius: 0.48em 0 0.48em 0;\nline-height: 1.0;\nfont-size: 1.0em;\n}\n " +
+              // Рейтинг
+            ".card__vote {\n  position: absolute;\n  bottom: auto; \n right: 0em;\n  top: 0em;\n  background: rgba(0, 0, 0, 0.6);\n    font-weight: 700;\n  color: #fff;\n -webkit-border-radius: 0 0.34em 0 0.34em;\n     -moz-border-radius: 0 0.34em 0 0.34em;\n          border-radius: 0 0.34em 0 0.34em;\nline-height: 1.0;\nfont-size: 1.4em;\n}\n  " +
+              // Иконки закладок и т.д.
+            ".card__icons {\n  position: absolute;\n  top: 2em;\n  left: 0;\n  right: auto;\n  display: -webkit-box;\n  display: -webkit-flex;\n  display: -moz-box;\n  display: -ms-flexbox;\n  display: flex;\n  -webkit-box-pack: center;\n  -webkit-justify-content: center;\n     -moz-box-pack: center;\n      -ms-flex-pack: center;\n          justify-content: center;\n background: rgba(0, 0, 0, 0.6);\n  color: #fff;\n    -webkit-border-radius: 0 0.5em 0.5em 0;\n     -moz-border-radius: 0 0.5em 0.5em 0;\n          border-radius: 0 0.5em 0.5em 0;\n}\n" +
+            ".card__icons-inner {\n  background: rgba(0, 0, 0, 0); \n}\n" +
+              // Статус расширенных закладок
+            ".card__marker {\n position: absolute;\n  left: 0em;\n  top: 4em;\n  bottom: auto; \n  background: rgba(0, 0, 0, 0.6);\n  -webkit-border-radius: 0 0.5em 0.5em 0;\n     -moz-border-radius: 0 0.5em 0.5em 0;\n          border-radius: 0 0.5em 0.5em 0;\n  font-weight: 700;\n font-size: 1.0em;\n   padding: 0.4em 0.6em;\n    display: -webkit-box;\n  display: -webkit-flex;\n  display: -moz-box;\n  display: -ms-flexbox;\n  display: flex;\n  -webkit-box-align: center;\n  -webkit-align-items: center;\n     -moz-box-align: center;\n      -ms-flex-align: center;\n          align-items: center;\n  line-height: 1.2;\nmax-width: min(12em, 95%);\nbox-sizing: border-box;\n}\n" +
+              // На маленьких экранах обрезаем, на больших полностью
+            ".card__marker > span {\n max-width: min(12em, 95%);\n}\n" +
+
+            // Уменьшаем расстояние между рядами только для карточках в списках
+            ".items-line.items-line--type-cards + .items-line.items-line--type-cards  {\nmargin-top: 1em;\n}\n" +
+            // Так же широкие карты фиксим, чтобы не было отскока нижнего ряда, делаем отступ снизу
+            ".card--small .card__view {\nmargin-bottom: 2em;\n}\n" +
+            // Уменьшаем высоту после удаления футера, нужно для card_episode
+            ".items-line--type-cards {\n min-height: 18em;\n}\n" +
+            // Внутри карточки информация стремится к нижней границе экрана
+            "@media screen and (min-width: 580px) {\n.full-start-new {\nmin-height: 80vh;\ndisplay: flex\n}\n}\n" +
+            // Постер в карточке, менее затемнен чем в стоке
+            ".full-start__background.loaded {\nopacity: 0.8;\n}\n.full-start__background.dim {\nopacity: 0.2;\n}\n" +
+            // Скругления у большого числа элементов
+            ".explorer__files .torrent-filter .simple-button {\nfont-size: 1.2em;\n-webkit-border-radius: 0.5em;\n-moz-border-radius: 0.5em;\nborder-radius: 0.5em;\n}\n" +
+            ".full-review-add,\n.full-review,\n.extensions__item,\n.extensions__block-add,\n.search-source,\n.bookmarks-folder__layer,\n.bookmarks-folder__body,\n.card__img,\n.card__promo,\n.full-episode--next .full-episode__img:after,\n.full-episode__img img,\n.full-episode__body,\n.full-person__photo,\n.card-more__box,\n.full-start__button,\n.simple-button,\n.register {\nborder-radius: 0.5em;\n}\n" +
+            ".extensions__item.focus::after,\n.extensions__block-add.focus::after,\n.full-episode.focus::after,\n.full-review-add.focus::after,\n.card-parser.focus::after,\n.card-episode.focus .full-episode::after,\n.card-episode.hover .full-episode::after,\n.card.focus .card__view::after,\n.card.hover .card__view::after,\n.card-more.focus .card-more__box::after,\n.register.focus::after {\nborder-radius: 1em;\n}\n" +
+            ".search-source.focus,\n.simple-button.focus,\n.menu__item.focus,\n.menu__item.traverse,\n.menu__item.hover,\n.full-start__button.focus,\n.full-descr__tag.focus,\n.player-panel .button.focus,\n.full-person.selector.focus,\n.tag-count.selector.focus {\nborder-radius: 0.5em;\n}\n" +
+            // Меню слева
+            ".menu__item.focus {border-radius: 0 0.5em 0.5em 0;\n}\n" +
+            ".menu__list {\npadding-left: 0em;\n}\n" +
+            // Оставим иконки белыми в левом Меню
+            ".menu__item.focus .menu__ico {\n   -webkit-filter: invert(1);\n    filter: invert(1);\n }\n " +
+            // Белые иконки в бошке
+            // ".head__action.focus, .head__action.hover {\ncolor: fff;\n}\n" +
+            "</style>\n";
+        Lampa.Template.add('forall_style_css', forall_style);
+        $('body').append(Lampa.Template.get('forall_style_css', {}, true));
+    }
+    
+    function incardtemplate() {
+        var incardtemplate = localStorage.getItem('maxsm_themes_incardtemplate')  === 'true';
+        if (incardtemplate) {
+            // Шаблон карточки Фильма\Сериала, переносим кнопки из кнопки "Смотреть" на верхний уровень etc.
+            Lampa.Template.add('full_start_new', "<div class=\"full-start-new\">\n\n<div class=\"full-start-new__body\">\n<div class=\"full-start-new__left\">\n<div class=\"full-start-new__poster\">\n<img class=\"full-start-new__img full--poster\" />\n</div>\n</div>\n\n<div class=\"full-start-new__right\">\n<div class=\"full-start-new__head\"></div>\n<div class=\"full-start-new__title\">{title}</div>\n<div class=\"full-start__title-original\">{original_title}</div>\n<div class=\"full-start-new__tagline full--tagline\">{tagline}</div>\n<div class=\"full-start-new__rate-line\">\n<div class=\"full-start__rate rate--tmdb\"><div>{rating}</div><div class=\"source--name\">TMDB</div></div>\n<div class=\"full-start__rate rate--imdb hide\"><div></div><div class=\"source--name\">IMDb</div></div>\n<div class=\"full-start__rate rate--kp hide\"><div></div><div class=\"source--name\">Кинопоиск</div></div>\n\n<div class=\"full-start__pg hide\"></div>\n<div class=\"full-start__status hide\"></div>\n</div>\n<div class=\"full-start-new__details\"></div>\n<div class=\"full-start-new__reactions\">\n<div>#{reactions_none}</div>\n</div>\n\n<div class=\"full-start-new__buttons\">\n<div class=\"full-start__button selector button--play\">\n<svg width=\"28\" height=\"29\" viewBox=\"0 0 28 29\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n<circle cx=\"14\" cy=\"14.5\" r=\"13\" stroke=\"currentColor\" stroke-width=\"2.7\"/>\n<path d=\"M18.0739 13.634C18.7406 14.0189 18.7406 14.9811 18.0739 15.366L11.751 19.0166C11.0843 19.4015 10.251 18.9204 10.251 18.1506L10.251 10.8494C10.251 10.0796 11.0843 9.5985 11.751 9.9834L18.0739 13.634Z\" fill=\"currentColor\"/>\n</svg>\n\n<span>#{title_watch}</span>\n</div>\n\n<div class=\"full-start__button view--torrent\">\n<svg xmlns=\"http://www.w3.org/2000/svg\"  viewBox=\"0 0 50 50\" width=\"50px\" height=\"50px\">\n<path d=\"M25,2C12.317,2,2,12.317,2,25s10.317,23,23,23s23-10.317,23-23S37.683,2,25,2z M40.5,30.963c-3.1,0-4.9-2.4-4.9-2.4 S34.1,35,27,35c-1.4,0-3.6-0.837-3.6-0.837l4.17,9.643C26.727,43.92,25.874,44,25,44c-2.157,0-4.222-0.377-6.155-1.039L9.237,16.851 c0,0-0.7-1.2,0.4-1.5c1.1-0.3,5.4-1.2,5.4-1.2s1.475-0.494,1.8,0.5c0.5,1.3,4.063,11.112,4.063,11.112S22.6,29,27.4,29 c4.7,0,5.9-3.437,5.7-3.937c-1.2-3-4.993-11.862-4.993-11.862s-0.6-1.1,0.8-1.4c1.4-0.3,3.8-0.7,3.8-0.7s1.105-0.163,1.6,0.8 c0.738,1.437,5.193,11.262,5.193,11.262s1.1,2.9,3.3,2.9c0.464,0,0.834-0.046,1.152-0.104c-0.082,1.635-0.348,3.221-0.817,4.722 C42.541,30.867,41.756,30.963,40.5,30.963z\" fill=\"currentColor\"/>\n</svg>\n\n<span>#{full_torrents}</span>\n</div>\n\n<div class=\"full-start__button selector view--trailer\">\n<svg height=\"70\" viewBox=\"0 0 80 70\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n<path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M71.2555 2.08955C74.6975 3.2397 77.4083 6.62804 78.3283 10.9306C80 18.7291 80 35 80 35C80 35 80 51.2709 78.3283 59.0694C77.4083 63.372 74.6975 66.7603 71.2555 67.9104C65.0167 70 40 70 40 70C40 70 14.9833 70 8.74453 67.9104C5.3025 66.7603 2.59172 63.372 1.67172 59.0694C0 51.2709 0 35 0 35C0 35 0 18.7291 1.67172 10.9306C2.59172 6.62804 5.3025 3.2395 8.74453 2.08955C14.9833 0 40 0 40 0C40 0 65.0167 0 71.2555 2.08955ZM55.5909 35.0004L29.9773 49.5714V20.4286L55.5909 35.0004Z\" fill=\"currentColor\"></path>\n</svg>\n\n<span>#{full_trailers}</span>\n</div>\n<div class=\"full-start__button selector button--book\">\n<svg width=\"21\" height=\"32\" viewBox=\"0 0 21 32\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n<path d=\"M2 1.5H19C19.2761 1.5 19.5 1.72386 19.5 2V27.9618C19.5 28.3756 19.0261 28.6103 18.697 28.3595L12.6212 23.7303C11.3682 22.7757 9.63183 22.7757 8.37885 23.7303L2.30302 28.3595C1.9739 28.6103 1.5 28.3756 1.5 27.9618V2C1.5 1.72386 1.72386 1.5 2 1.5Z\" stroke=\"currentColor\" stroke-width=\"2.5\"/>\n</svg>\n\n<span>#{settings_input_links}</span>\n</div>\n\n<div class=\"full-start__button selector button--reaction\">\n<svg width=\"38\" height=\"34\" viewBox=\"0 0 38 34\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n<path d=\"M37.208 10.9742C37.1364 10.8013 37.0314 10.6441 36.899 10.5117C36.7666 10.3794 36.6095 10.2744 36.4365 10.2028L12.0658 0.108375C11.7166 -0.0361828 11.3242 -0.0361227 10.9749 0.108542C10.6257 0.253206 10.3482 0.530634 10.2034 0.879836L0.108666 25.2507C0.0369593 25.4236 3.37953e-05 25.609 2.3187e-08 25.7962C-3.37489e-05 25.9834 0.0368249 26.1688 0.108469 26.3418C0.180114 26.5147 0.28514 26.6719 0.417545 26.8042C0.54995 26.9366 0.707139 27.0416 0.880127 27.1131L17.2452 33.8917C17.5945 34.0361 17.9869 34.0361 18.3362 33.8917L29.6574 29.2017C29.8304 29.1301 29.9875 29.0251 30.1199 28.8928C30.2523 28.7604 30.3573 28.6032 30.4289 28.4303L37.2078 12.065C37.2795 11.8921 37.3164 11.7068 37.3164 11.5196C37.3165 11.3325 37.2796 11.1471 37.208 10.9742ZM20.425 29.9407L21.8784 26.4316L25.3873 27.885L20.425 29.9407ZM28.3407 26.0222L21.6524 23.252C21.3031 23.1075 20.9107 23.1076 20.5615 23.2523C20.2123 23.3969 19.9348 23.6743 19.79 24.0235L17.0194 30.7123L3.28783 25.0247L12.2918 3.28773L34.0286 12.2912L28.3407 26.0222Z\" fill=\"currentColor\"/>\n<path d=\"M25.3493 16.976L24.258 14.3423L16.959 17.3666L15.7196 14.375L13.0859 15.4659L15.4161 21.0916L25.3493 16.976Z\" fill=\"currentColor\"/>\n</svg>                \n\n<span>#{title_reactions}</span>\n</div>\n\n<div class=\"full-start__button selector button--subscribe hide\">\n<svg width=\"25\" height=\"30\" viewBox=\"0 0 25 30\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n<path d=\"M6.01892 24C6.27423 27.3562 9.07836 30 12.5 30C15.9216 30 18.7257 27.3562 18.981 24H15.9645C15.7219 25.6961 14.2632 27 12.5 27C10.7367 27 9.27804 25.6961 9.03542 24H6.01892Z\" fill=\"currentColor\"/>\n<path d=\"M3.81972 14.5957V10.2679C3.81972 5.41336 7.7181 1.5 12.5 1.5C17.2819 1.5 21.1803 5.41336 21.1803 10.2679V14.5957C21.1803 15.8462 21.5399 17.0709 22.2168 18.1213L23.0727 19.4494C24.2077 21.2106 22.9392 23.5 20.9098 23.5H4.09021C2.06084 23.5 0.792282 21.2106 1.9273 19.4494L2.78317 18.1213C3.46012 17.0709 3.81972 15.8462 3.81972 14.5957Z\" stroke=\"currentColor\" stroke-width=\"2.5\"/>\n</svg>\n\n<span>#{title_subscribe}</span>\n</div>\n\n<div class=\"full-start__button selector button--options\">\n<svg width=\"38\" height=\"10\" viewBox=\"0 0 38 10\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n<circle cx=\"4.88968\" cy=\"4.98563\" r=\"4.75394\" fill=\"currentColor\"/>\n<circle cx=\"18.9746\" cy=\"4.98563\" r=\"4.75394\" fill=\"currentColor\"/>\n<circle cx=\"33.0596\" cy=\"4.98563\" r=\"4.75394\" fill=\"currentColor\"/>\n</svg>\n</div>\n\n</div>\n</div>\n</div>\n</div>");
+        }
+    }
+    
+function translate_tv() {
+    var tv_caption = Lampa.Lang.translate('maxsm_themes_tvcaption');
+    var translate_tv = localStorage.getItem('maxsm_themes_translate_tv')  === 'true';
+    var translate_tv_style;
+    $('#maxsm_themes_translate_tv').remove(); 
+    if (!translate_tv) {
+        translate_tv_style = "\n<style id=\"maxsm_themes_translate_tv\">\n " +
+            ".card__type  {\n  display: none;\n}\n " +
+            ".card--tv .card__type {\n  display: none;\n}\n" +
+        "</style>\n";
+        $('body').append(translate_tv_style);
+    } else {
+        translate_tv_style = "\n<style id=\"maxsm_themes_translate_tv\">\n " +
+            ".card--tv .card__type,\n.card__type {\n  display: none;\n}\n" + 
+            ".card__type::after {\n  display: none;\n}" +
+        "</style>\n";
+        $('body').append(translate_tv_style);
+    }
+}
+    
+    function animations() {
+        var animations = localStorage.getItem('maxsm_themes_animations') === 'true';
+        $('#maxsm_themes_animations').remove();
+        if (animations) {
+            var animations_style = "\n<style id=\"maxsm_themes_animations\">\n " +
+                // Пробуем немного анимацмм
+                ".card\n{transform: scale(1);\ntransition: transform 0.3s ease;\n}\n" +
+                ".card.focus\n{transform: scale(1.03);\n}\n" +
+                ".torrent-item,\n.online-prestige\n{transform: scale(1);\ntransition: transform 0.3s ease;\n}\n" +
+                ".torrent-item.focus,\n.online-prestige.focus\n{transform: scale(1.01);\n}\n" +
+                ".extensions__item,\n.extensions__block-add,\n.full-review-add,\n.full-review,\n.tag-count,\n.full-person,\n.full-episode,\n.simple-button,\n.full-start__button,\n.items-cards .selector,\n.card-more,\n.explorer-card__head-img.selector,\n.card-episode\n{transform: scale(1);\ntransition: transform 0.3s ease;\n}\n" +
+                ".extensions__item.focus,\n.extensions__block-add.focus,\n.full-review-add.focus,\n.full-review.focus,\n.tag-count.focus,\n.full-person.focus,\n.full-episode.focus,\n.simple-button.focus,\n.full-start__button.focus,\n.items-cards .selector.focus,\n.card-more.focus,\n.explorer-card__head-img.selector.focus,\n.card-episode.focus\n{transform: scale(1.03);\n}\n" +
+                ".menu__item {\n  transition: transform 0.3s ease;\n}\n" +
+                ".menu__item.focus {\n transform: translateX(-0.2em);\n}\n" +
+                ".selectbox-item,\n.settings-folder,\n.settings-param {\n transition: transform 0.3s ease;\n}\n" +
+                ".selectbox-item.focus,\n.settings-folder.focus,\n.settings-param.focus {\n transform: translateX(0.2em);\n}\n" +
+            "</style>\n";
+            $('body').append(animations_style);
+        }
+    }
+    
+    function bigbuttons() {
+        var bigbuttons = localStorage.getItem('maxsm_themes_bigbuttons')  === 'true';
+        $('#maxsm_themes_bigbuttons').remove();
+        if (bigbuttons) {
+            var bigbuttons_style = "\n<style id=\"maxsm_themes_bigbuttons\">\n " +
+                ".full-start-new__buttons .full-start__button:not(.focus) span {\ndisplay: inline ;\n}\n@media screen and (max-width: 580px) {\n.full-start-new__buttons {\noverflow: auto;\n}\n.full-start-new__buttons .full-start__button:not(.focus) span {\ndisplay: none;\n}\n}\n" +
+            "</style>\n";
+            $('body').append(bigbuttons_style);
+        }
+    }    
+
+    // Функция инициализации плагина
+    function startPlugin() {
+        // Список доступных тем
+        var availableThemes = ['mint_dark', 'deep_aurora', 'crystal_cyan', 'amber_noir', 'velvet_sakura', 'default'];
+        
+        // Значения по умолчанию
+        if (!localStorage.getItem('maxsm_themes_animations')) {
+            localStorage.setItem('maxsm_themes_animations', 'true');
+        }
+        if (!localStorage.getItem('maxsm_themes_translate_tv')) {
+            localStorage.setItem('maxsm_themes_translate_tv', 'true');
+        }
+        if (!localStorage.getItem('maxsm_themes_incardtemplate')) {
+            localStorage.setItem('maxsm_themes_incardtemplate', 'false');
+        }   
+        if (!localStorage.getItem('maxsm_themes_bigbuttons')) {
+            localStorage.setItem('maxsm_themes_bigbuttons', 'false');
+        }
+        // Меню        
+        Lampa.SettingsApi.addComponent({
+            component: "maxsm_themes",
+            name: Lampa.Lang.translate('maxsm_themes'),
+            icon: themes_svg
+        });
+        
+        Lampa.SettingsApi.addParam({
+            component: 'maxsm_themes',
+            param: {
+                name: 'maxsm_themes_selected',
+                type: 'select',
+                values: {
+                    mint_dark: 'Mint Dark',
+                    deep_aurora: 'Deep Aurora',
+                    crystal_cyan: 'Crystal Cyan',
+                    amber_noir: 'Amber Noir',
+                    velvet_sakura: 'Velvet Sakura',
+                    default: 'LAMPA'
+                },
+                "default": 'Mint Dark'
+            },
+            field: {
+                name: Lampa.Lang.translate('maxsm_themes_theme'),
+                description: ''
+            },
+            onChange: function onChange(value) {
+                maxsm_themes.settings.theme = value;
+                Lampa.Settings.update();
+                applyTheme(value);
+            }
+        });
+        
+        Lampa.SettingsApi.addParam({
+            component: 'maxsm_themes',
+            param: {
+                name: 'maxsm_themes_animations',
+                type: "trigger",
+                default: true
+            },
+            field: {
+                name: Lampa.Lang.translate('maxsm_themes_animations'),
+                description: ''
+            },
+            onChange: function(value) {
+                animations();
+            }
+        });
+        
+        Lampa.SettingsApi.addParam({
+            component: 'maxsm_themes',
+            param: {
+                name: 'maxsm_themes_translate_tv',
+                type: "trigger",
+                default: true
+            },
+            field: {
+                name: Lampa.Lang.translate('maxsm_themes_translate_tv'),
+                description: ''
+            },
+            onChange: function(value) {
+                translate_tv();
+            }
+        });
+        
+        Lampa.SettingsApi.addParam({
+            component: 'maxsm_themes',
+            param: {
+                name: 'maxsm_themes_incardtemplate',
+                type: "trigger",
+                default: false
+            },
+            field: {
+                name: Lampa.Lang.translate('maxsm_themes_incardtemplate'),
+                description: ''
+            },
+            onChange: function(value) {
+                window.location.reload();
+            }
+        });
+        
+        Lampa.SettingsApi.addParam({
+            component: 'maxsm_themes',
+            param: {
+                name: 'maxsm_themes_bigbuttons',
+                type: "trigger",
+                default: false
+            },
+            field: {
+                name: Lampa.Lang.translate('maxsm_themes_bigbuttons'),
+                description: ''
+            },
+            onChange: function(value) {
+                bigbuttons();
+            }
+        });
+        
+        /* Хак
+        Lampa.Settings.listener.follow('open', function(e) {
+            if (e.name == 'interface') {
+                $("div[data-name=interface_size]").after($("div[data-name=maxsm_themes_selected]"));
+            }
+        }); */
+
+        // Применяем настройки и проверяем, существует ли выбранная тема
+        var savedTheme = Lampa.Storage.get('maxsm_themes_selected', 'mint_dark');
+        if (availableThemes.indexOf(savedTheme) === -1) {
+            // Если сохраненная тема не существует, ставим по умолчанию
+            Lampa.Storage.set('maxsm_themes_selected', 'mint_dark');
+            savedTheme = 'mint_dark';
+        }
+        maxsm_themes.settings.theme = savedTheme;
+        applyTheme(maxsm_themes.settings.theme);
+    }
+
+    // Ждем загрузки приложения и запускаем плагин
+    if (window.appready) {
+        startPlugin();
+    } else {
+        Lampa.Listener.follow('app', function(event) {
+            if (event.type === 'ready') {
+                startPlugin();
+            }
+        });
+    }
+    // Регистрация плагина в манифесте
+    Lampa.Manifest.plugins = {
+        name: 'maxsm_themes',
+        version: '2.6.1',
+        description: 'maxsm_themes'
+    };
+
+    // Экспортируем объект плагина для внешнего доступа
+    window.maxsm_themes = maxsm_themes;
 })();
